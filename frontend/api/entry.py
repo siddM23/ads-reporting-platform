@@ -7,6 +7,13 @@ sys.path.append(os.path.dirname(__file__))
 from meta.meta_curl import fetch_and_store, fetch_and_store_all, get_cached_insights as get_meta_insights
 from google.google_curl import fetch_and_store as fetch_google, fetch_and_store_all as fetch_google_all, get_cached_insights as get_google_insights
 from Database.database import DynamoDB
+from dotenv import load_dotenv
+
+# Load environment variables (Local only)
+ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'global.env')
+if os.path.exists(ENV_PATH):
+    load_dotenv(ENV_PATH, override=True)
+
 from utils.security import encrypt_token
 from utils.sync_tracker import SyncTracker
 
@@ -16,15 +23,6 @@ from typing import List, Optional
 from contextlib import asynccontextmanager
 import requests
 import urllib.parse
-from dotenv import load_dotenv
-
-
-# Load environment variables
-ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'global.env')
-if os.path.exists(ENV_PATH):
-    load_dotenv(ENV_PATH, override=True)
-else:
-    print(f"DEBUG: global.env not found at {ENV_PATH}, assuming Vercel environment variables are set.")
 
 # Meta OAuth Configuration
 META_CLIENT_ID = os.getenv("META_CLIENT_ID", "").replace('"', '').replace("'", "").strip()
@@ -78,8 +76,6 @@ def cleanup():
 
 # app = FastAPI(lifespan=lifespan)
 app = FastAPI()
-from mangum import Mangum
-handler = Mangum(app)
 
 def ensure_db():
     global db_initialized
