@@ -260,9 +260,13 @@ export default function DashPage() {
     const fetchSyncStatus = async () => {
         try {
             const res = await fetch(`${API_URL}/insights/sync-status`);
+            if (!res.ok) return null;
             const json = await res.json();
-            setSyncStatus(json);
-            return json;
+            if (json && typeof json === 'object' && 'can_sync' in json) {
+                setSyncStatus(json);
+                return json;
+            }
+            return null;
         } catch (e) {
             console.error("Failed to fetch sync status", e);
             return null;
@@ -363,8 +367,14 @@ export default function DashPage() {
         const loadInitialData = async () => {
             try {
                 const res = await fetch(`${API_URL}/insights/all`);
+                if (!res.ok) {
+                    console.error(`API Error: ${res.status}`);
+                    return;
+                }
                 const json = await res.json();
-                setRawApiData(json);
+                if (json && typeof json === 'object') {
+                    setRawApiData(json);
+                }
             } catch (e) {
                 console.error("Initial load failed", e);
             }

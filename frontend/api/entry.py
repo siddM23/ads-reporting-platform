@@ -27,12 +27,12 @@ import urllib.parse
 # Meta OAuth Configuration
 META_CLIENT_ID = os.getenv("META_CLIENT_ID", "").replace('"', '').replace("'", "").strip()
 META_CLIENT_SECRET = os.getenv("META_CLIENT_SECRET", "").replace('"', '').replace("'", "").strip()
-META_REDIRECT_URI = os.getenv("META_REDIRECT_URI", "http://localhost:8000/auth/meta/callback").replace('"', '').replace("'", "").strip()
+META_REDIRECT_URI = os.getenv("META_REDIRECT_URI", "http://localhost:8000/api/auth/meta/callback").replace('"', '').replace("'", "").strip()
 
 # Google OAuth Configuration
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").replace('"', '').replace("'", "").strip()
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "").replace('"', '').replace("'", "").strip()
-GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/google/callback").replace('"', '').replace("'", "").strip()
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/api/auth/google/callback").replace('"', '').replace("'", "").strip()
 GOOGLE_DEVELOPER_TOKEN = os.getenv("GOOGLE_DEVELOPER_TOKEN", "").replace('"', '').replace("'", "").strip()
 
 print(f"--- OAUTH CONFIG DIAGNOSTICS ---")
@@ -77,6 +77,9 @@ def cleanup():
 # app = FastAPI(lifespan=lifespan)
 app = FastAPI()
 
+# Database initialization state
+db_initialized = False
+
 def ensure_db():
     global db_initialized
     if not db_initialized:
@@ -114,15 +117,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-db_initialized = False
+# Removed redundant ensure_db definition
 
-def ensure_db():
-    global db_initialized
-    if not db_initialized:
-        init_db()
-        db_initialized = True
-
-@app.get("/")
+@app.get("/api/")
 def health_check():
     ensure_db()
     return {"status": "ok", "message": "Backend is running"}
@@ -140,14 +137,14 @@ class IntegrationRequest(BaseModel):
 
 from meta.meta_curl import fetch_and_store, fetch_and_store_all, get_cached_insights
 
-@app.get("/insights")
+@app.get("/api/insights")
 def get_insights(range: int = Query(7)):
     """
     Returns cached data from DynamoDB. Does NOT trigger a Meta API fetch.
     """
     return get_cached_insights(range)
 
-@app.get("/insights/all")
+@app.get("/api/insights/all")
 def get_all_insights():
     """
     Returns all ranges (7, 30, 180 days) for both Meta and Google.
@@ -167,7 +164,7 @@ def get_all_insights():
         "180": meta_180 + google_180
     }
 
-@app.get("/insights/sync-status")
+@app.get("/api/insights/sync-status")
 def get_sync_status():
     """
     Returns current sync rate-limit status for the frontend.
@@ -175,7 +172,7 @@ def get_sync_status():
     ensure_db()
     return sync_tracker.get_status()
 
-@app.post("/insights/sync")
+@app.post("/api/insights/sync")
 def trigger_sync():
     """
     Triggers a fresh sync from Meta API and updates DynamoDB.
@@ -212,7 +209,7 @@ def trigger_sync():
         "syncs_remaining": status["syncs_remaining"] - 1,
     }
 
-@app.get("/integrations")
+@app.get("/api/integrations")
 def list_integrations(platform: Optional[str] = None):
     ensure_db()
     results = integrations_db.list_integrations(platform=platform)
@@ -226,7 +223,7 @@ def list_integrations(platform: Optional[str] = None):
     return results
 
 
-@app.post("/integrations")
+@app.post("/api/integrations")
 def add_integration(req: IntegrationRequest):
     success = integrations_db.save_integration(
         platform=req.platform,
@@ -239,7 +236,7 @@ def add_integration(req: IntegrationRequest):
         raise HTTPException(status_code=500, detail="Failed to save integration")
     return {"message": f"Successfully connected {req.platform} account {req.account_id}"}
 
-@app.get("/auth/meta/login")
+@app.get("/api/auth/meta/login")
 def meta_login():
     """Redirects to Facebook OAuth Dialog"""
     if not META_CLIENT_ID:
@@ -255,7 +252,7 @@ def meta_login():
 
 from fastapi.responses import RedirectResponse
 
-@app.get("/auth/meta/callback")
+@app.get("/api/auth/meta/callback")
 def meta_callback(code: str):
     """Handles OAuth callback and exchanges code for long-lived token"""
     if not code:
@@ -320,7 +317,7 @@ def meta_callback(code: str):
     # Redirect back to the frontend
     return RedirectResponse(url=f"{FRONTEND_URL}/integrations?success=true&platform=meta")
 
-@app.get("/auth/google/login")
+@app.get("/api/auth/google/login")
 def google_login():
     """Redirects to Google OAuth Dialog"""
     if not GOOGLE_CLIENT_ID:
@@ -341,7 +338,7 @@ def google_login():
     print(f"DEBUG: Generated Google OAuth URL: {url}")
     return {"url": url}
 
-@app.get("/auth/google/callback")
+@app.get("/api/auth/google/callback")
 def google_callback(code: str):
     """Handles Google OAuth callback and exchanges code for tokens"""
     if not code:

@@ -92,8 +92,16 @@ export default function IntegrationsPage() {
     const fetchIntegrations = async () => {
         try {
             const res = await fetch(`${API_URL}/integrations`);
+            if (!res.ok) {
+                console.error(`API Error: ${res.status} ${res.statusText}`);
+                return;
+            }
             const data = await res.json();
-            setConnectedAccounts(data);
+            if (Array.isArray(data)) {
+                setConnectedAccounts(data);
+            } else {
+                console.error("Expected array from /integrations, got:", data);
+            }
         } catch (err) {
             console.error("Failed to fetch integrations", err);
         } finally {
@@ -128,8 +136,9 @@ export default function IntegrationsPage() {
     };
 
     const filterAccounts = (platform: string) => {
-        return connectedAccounts
-            .filter(a => a.platform.toLowerCase() === platform.toLowerCase())
+        const accounts = Array.isArray(connectedAccounts) ? connectedAccounts : [];
+        return accounts
+            .filter(a => a?.platform?.toLowerCase() === platform.toLowerCase())
             .map(a => ({
                 email: a.email,
                 status: a.status as "Active" | "Inactive",
