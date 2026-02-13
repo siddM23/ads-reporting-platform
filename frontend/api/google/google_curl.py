@@ -1,8 +1,8 @@
-import requests
 import datetime
 import json
 import os
 from dotenv import load_dotenv
+from google.ads.googleads.client import GoogleAdsClient
 
 from utils.security import decrypt_token
 
@@ -27,106 +27,94 @@ CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 # Simple in-memory cache for discovery to prevent redundant calls in parallel threads
 _discovery_cache = {}
 
-def get_access_token(stored_token):
+def get_google_client(refresh_token, login_customer_id=None):
     """
-    If stored_token starts with '1//', it's likely a refresh token. 
-    Google access tokens usually start with 'ya29.'.
-    Returns a valid access token.
+    Creates a GoogleAdsClient from refresh token and env credentials.
+    If login_customer_id is provided, it's used for manager account access.
     """
-    if stored_token.startswith("ya29."):
-        return stored_token
-        
-    print(f"GOOGLE SYNC: Refreshing token...")
-    url = "https://oauth2.googleapis.com/token"
-    payload = {
+    credentials = {
+        "developer_token": DEVELOPER_TOKEN,
         "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET,
-        "refresh_token": stored_token,
-        "grant_type": "refresh_token"
+        "refresh_token": refresh_token,
+        "use_proto_plus": True
     }
-    r = requests.post(url, data=payload)
-    if r.ok:
-        new_token = r.json().get("access_token")
-        print(f"GOOGLE SYNC: Token refreshed successfully.")
-        return new_token
-    else:
-        print(f"GOOGLE SYNC: Token refresh FAILED ({r.status_code}): {r.text}")
-        return stored_token # Fallback
+    if login_customer_id:
+        credentials["login_customer_id"] = str(login_customer_id)
+    
+    return GoogleAdsClient.load_from_dict(credentials)
 
-def discover_accounts(access_token, email=None):
+
+def discover_accounts(refresh_token, email=None):
     """
-    Returns a list of accessible customer IDs for the given token.
+    Returns a list of accessible customer IDs for the given token using Google Ads Client.
     """
     if email and email in _discovery_cache:
         print(f"GOOGLE DISCOVERY: Using cached IDs for {email}")
         return _discovery_cache[email]
 
     try:
-        # Try both the documented URL and a common fallback
-        url = f"https://googleads.googleapis.com/{GOOGLE_ADS_VERSION}/customers:listAccessibleCustomers"
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "developer-token": DEVELOPER_TOKEN
-        }
-        print(f"GOOGLE DISCOVERY: Querying {url}")
-        r = requests.get(url, headers=headers, timeout=10)
+        client = get_google_client(refresh_token)
+        customer_service = client.get_service("CustomerService")
         
-        if r.ok:
-            data = r.json()
-            resource_names = data.get("resourceNames", [])
-            customer_ids = [rn.split("/")[-1] for rn in resource_names]
-            print(f"GOOGLE DISCOVERY: Found {len(customer_ids)} base accounts: {customer_ids}")
-            
-            # Now, for each base account, check if it's a manager and find its sub-accounts
-            all_discovered_ids = set(customer_ids)
-            for base_id in customer_ids:
-                sub_ids = find_sub_accounts(base_id, access_token)
-                all_discovered_ids.update(sub_ids)
-            
-            result = list(all_discovered_ids)
-            if email:
-                _discovery_cache[email] = result
-            return result
-        else:
-            print(f"GOOGLE DISCOVERY: API failed ({r.status_code}): {r.text}")
-            return []
+        print(f"GOOGLE DISCOVERY: Listing accessible customers using SDK...")
+        accessible_customers = customer_service.list_accessible_customers()
+        resource_names = accessible_customers.resource_names
+        customer_ids = [rn.split("/")[-1] for rn in resource_names]
+        
+        print(f"GOOGLE DISCOVERY: Found {len(customer_ids)} base accounts: {customer_ids}")
+        
+        # Now, for each base account, check if it's a manager and find its sub-accounts
+        all_discovered_ids = set(customer_ids)
+        for base_id in customer_ids:
+            sub_ids = find_sub_accounts_sdk(base_id, refresh_token)
+            all_discovered_ids.update(sub_ids)
+        
+        result = list(all_discovered_ids)
+        if email:
+            _discovery_cache[email] = result
+        return result
     except Exception as e:
-        print(f"GOOGLE DISCOVERY: Exception during request: {e}")
+        print(f"GOOGLE DISCOVERY SDK ERROR: {e}")
         return []
 
-def find_sub_accounts(manager_id, access_token):
+def find_sub_accounts_sdk(manager_id, refresh_token):
     """
-    Given a manager ID, finds all sub-accounts (clients) under it.
+    Given a manager ID, finds all sub-accounts (clients) under it using SDK.
     """
     try:
-        print(f"GOOGLE DISCOVERY: Checking if {manager_id} has sub-accounts...")
-        url = f"https://googleads.googleapis.com/{GOOGLE_ADS_VERSION}/customers/{manager_id}/googleAds:search"
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "developer-token": DEVELOPER_TOKEN,
-            "login-customer-id": str(manager_id)
-        }
+        print(f"GOOGLE DISCOVERY: Checking if {manager_id} has sub-accounts via SDK...")
+        # For manager queries, we must set "login-customer-id"
+        client = get_google_client(refresh_token, login_customer_id=manager_id)
+        ga_service = client.get_service("GoogleAdsService")
+        
         # Query for all client accounts under this manager
         query = "SELECT customer_client.client_customer, customer_client.descriptive_name, customer_client.manager FROM customer_client WHERE customer_client.level <= 1"
-        r = requests.post(url, headers=headers, json={"query": query}, timeout=10)
         
-        if r.ok:
-            rows = r.json().get("results", [])
-            client_ids = []
-            for row in rows:
-                client = row.get("customerClient", {})
-                if not client.get("manager"): # Only get actual client accounts, not sub-managers
-                    cid = client.get("clientCustomer").split("/")[-1]
-                    client_ids.append(cid)
-            print(f"GOOGLE DISCOVERY: Found {len(client_ids)} clients under manager {manager_id}")
-            return client_ids
-        return []
-    except:
+        search_request = client.get_type("SearchGoogleAdsRequest")
+        search_request.customer_id = str(manager_id)
+        search_request.query = query
+        
+        response = ga_service.search(request=search_request)
+        
+        client_ids = []
+        for row in response:
+            client_client = row.customer_client
+            # Only get actual client accounts, not sub-managers
+            if not client_client.manager:
+                cid = client_client.client_customer.split("/")[-1]
+                client_ids.append(cid)
+                
+        print(f"GOOGLE DISCOVERY: Found {len(client_ids)} clients under manager {manager_id}")
+        return client_ids
+    except Exception as e:
+        # Some accounts might not be managers, ignore errors
+        print(f"GOOGLE SUB-ACCOUNT DISCOVERY: {manager_id} skip or error: {e}")
         return []
 
-def fetch_for_customer(customer_id, token, days, login_customer_id=None):
+def fetch_for_customer(customer_id, refresh_token, days, login_customer_id=None):
     """
-    Fetches campaign-level insights for a single Google Ads Account via REST API.
+    Fetches campaign-level insights for a single Google Ads Account using official SDK.
     """
     if not DEVELOPER_TOKEN:
         print(f"[{customer_id}] Error: GOOGLE_DEVELOPER_TOKEN not set in global.env")
@@ -137,10 +125,14 @@ def fetch_for_customer(customer_id, token, days, login_customer_id=None):
         start_date = (datetime.date.today() - datetime.timedelta(days=days)).strftime('%Y-%m-%d')
         end_date = (datetime.date.today() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
         
-        print(f"[{customer_id}] Fetching Google insights for last {days} days ({start_date} to {end_date})...")
+        print(f"[{customer_id}] Fetching Google insights (SDK) for last {days} days ({start_date} to {end_date})...")
 
-        # 2. GAQL Query
-        # We fetch cost, conversions, and conversion value
+        # 2. Initialize Client
+        # If we have a login_customer_id (manager ID), use it; otherwise fallback to customer_id itself
+        client = get_google_client(refresh_token, login_customer_id=login_customer_id or customer_id)
+        ga_service = client.get_service("GoogleAdsService")
+
+        # 3. GAQL Query
         query = f"""
             SELECT
                 campaign.id,
@@ -153,51 +145,32 @@ def fetch_for_customer(customer_id, token, days, login_customer_id=None):
             WHERE segments.date BETWEEN '{start_date}' AND '{end_date}'
         """
 
-        # 3. Request
-        url = f"https://googleads.googleapis.com/{GOOGLE_ADS_VERSION}/customers/{customer_id}/googleAds:search"
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "developer-token": DEVELOPER_TOKEN,
-            "Content-Type": "application/json"
-        }
-        if login_customer_id:
-            headers["login-customer-id"] = str(login_customer_id)
+        # 4. Request
+        search_request = client.get_type("SearchGoogleAdsRequest")
+        search_request.customer_id = str(customer_id)
+        search_request.query = query
 
-        payload = {"query": query}
+        response = ga_service.search(request=search_request)
         
-        r = requests.post(url, headers=headers, json=payload)
-        
-        if not r.ok:
-            print(f"[{customer_id}] GOOGLE API ERROR {r.status_code} (URL: {url}): {r.text}")
-            r.raise_for_status()
-        
-        full_response = r.json()
-        rows = full_response.get("results", [])
-        
-        if not rows:
-            print(f"[{customer_id}] Google returned 0 total campaign rows for date range {start_date} to {end_date}.")
-            # Log the request ID for support if needed
-            print(f"[{customer_id}] Request-ID: {r.headers.get('request-id')}")
-        
-        # 4. Transform to a format similar to Meta's for the frontend
+        # 5. Transform
         formatted_data = []
-        for row in rows:
-            campaign = row.get("campaign", {})
-            metrics = row.get("metrics", {})
-            customer = row.get("customer", {})
+        for row in response:
+            campaign = row.campaign
+            metrics = row.metrics
+            customer = row.customer
             
             # Google cost is in micros (1/1,000,000)
-            spend = float(metrics.get("costMicros", 0)) / 1_000_000
-            conv_value = float(metrics.get("conversionsValue", 0))
-            conversions = float(metrics.get("conversions", 0))
+            spend = float(metrics.cost_micros) / 1_000_000
+            conv_value = float(metrics.conversions_value)
+            conversions = float(metrics.conversions)
             
             roas = conv_value / spend if spend > 0 else 0
             
             formatted_data.append({
-                "campaign_id": campaign.get("id"),
-                "campaign_name": campaign.get("name"),
+                "campaign_id": str(campaign.id),
+                "campaign_name": campaign.name,
                 "spend": str(spend),
-                "account_name": customer.get("descriptiveName", f"Account {customer_id}"),
+                "account_name": customer.descriptive_name or f"Account {customer_id}",
                 "platform": "google",
                 # Mimic Meta structure for frontend compatibility
                 "website_purchase_roas": [{"value": str(roas)}],
@@ -205,14 +178,11 @@ def fetch_for_customer(customer_id, token, days, login_customer_id=None):
                 "actions": [{"action_type": "offsite_conversion.fb_pixel_purchase", "value": str(conversions)}]
             })
             
-        print(f"[{customer_id}] Successfully fetched {len(formatted_data)} campaign rows.")
+        print(f"[{customer_id}] Successfully fetched {len(formatted_data)} campaign rows via SDK.")
         return formatted_data
 
     except Exception as e:
-        if hasattr(e, 'response') and e.response is not None:
-            print(f"[{customer_id}] Google API Error: {e.response.text}")
-        else:
-            print(f"[{customer_id}] Error fetching Google insights: {e}")
+        print(f"[{customer_id}] SDK Error fetching Google insights: {e}")
         return []
 
 def write_to_dynamodb(data, days):
@@ -247,17 +217,18 @@ def fetch_and_store(days: int = 7):
             print(f"GOOGLE SYNC: Skipping account due to missing data: {email} (CID: {cid})")
             continue
             
-        access_token = get_access_token(decrypt_token(token))
+        # The SDK handles its own token refresh if we give it the refresh token.
+        # decrypt_token(token) should be the refresh token (starts with 1//).
+        raw_token = decrypt_token(token)
         
         # 2. Handle Case where CID is an email (needs discovery)
         customer_ids = []
         if "@" in str(cid):
-            print(f"GOOGLE SYNC: CID is an email ({cid}), attempting discovery...")
-            customer_ids = discover_accounts(access_token, email=email)
+            print(f"GOOGLE SYNC: CID is an email ({cid}), attempting discovery via SDK...")
+            customer_ids = discover_accounts(raw_token, email=email)
             
             if customer_ids:
                 print(f"GOOGLE SYNC: Found {len(customer_ids)} IDs for {cid}. Updating integration records...")
-                # ... existing integration update logic ...
                 for real_cid in customer_ids:
                     integrations_db.save_integration(
                         platform="google",
@@ -268,7 +239,7 @@ def fetch_and_store(days: int = 7):
                     )
             else:
                 print(f"GOOGLE SYNC: No Google Ads accounts found associated with email {cid}. Stopping sync for this account.")
-                customer_ids = [] # Stop here, don't fallback to email
+                customer_ids = []
         else:
             customer_ids = [cid]
 
@@ -278,7 +249,10 @@ def fetch_and_store(days: int = 7):
                 continue
 
             print(f"GOOGLE SYNC: Fetching metrics for numeric CID {target_cid} ({email})...")
-            account_data = fetch_for_customer(target_cid, access_token, days)
+            # For target_cid, we pass target_cid as login_customer_id if it's a direct account.
+            # If it's a sub-account of a manager, the SDK might need the manager CID, 
+            # but usually the account CID itself works if we have permissions.
+            account_data = fetch_for_customer(target_cid, raw_token, days)
             
             if account_data:
                 print(f"GOOGLE SYNC: Found {len(account_data)} campaigns for CID {target_cid}. Writing to DB...")
