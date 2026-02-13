@@ -219,19 +219,18 @@ def fetch_and_store(days: int = 7):
             
             if customer_ids:
                 print(f"GOOGLE SYNC: Found {len(customer_ids)} IDs for {cid}. Updating integration records...")
-                # Retroactively update/split integration records to use numeric IDs
+                # ... existing integration update logic ...
                 for real_cid in customer_ids:
                     integrations_db.save_integration(
                         platform="google",
                         account_id=real_cid,
                         account_name=f"Google Account ({real_cid})",
                         email=email,
-                        access_token=token # Keep existing encrypted token
+                        access_token=token
                     )
-                # Note: We should ideally delete the 'email' record, but let's keep it safe for now.
             else:
-                print(f"GOOGLE SYNC: No numeric IDs found for {cid}. API calls will likely fail.")
-                customer_ids = [cid] # Fallback to original, likely will 404
+                print(f"GOOGLE SYNC: No Google Ads accounts found associated with email {cid}. Stopping sync for this account.")
+                customer_ids = [] # Stop here, don't fallback to email
         else:
             customer_ids = [cid]
 
