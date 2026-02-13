@@ -1,16 +1,22 @@
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
-from typing import List, Optional
+import os
+import sys
+
+# Ensure the current directory is in the path for finding siblings like 'meta', 'google', 'Database'
+sys.path.append(os.path.dirname(__file__))
+
 from meta.meta_curl import fetch_and_store, fetch_and_store_all, get_cached_insights as get_meta_insights
 from google.google_curl import fetch_and_store as fetch_google, fetch_and_store_all as fetch_google_all, get_cached_insights as get_google_insights
 from Database.database import DynamoDB
+from utils.security import encrypt_token
+from utils.sync_tracker import SyncTracker
+
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel
+from typing import List, Optional
 from contextlib import asynccontextmanager
-import os
 import requests
 import urllib.parse
 from dotenv import load_dotenv
-from utils.security import encrypt_token
-from utils.sync_tracker import SyncTracker
 
 
 # Load environment variables
@@ -42,13 +48,19 @@ print(f"----------------------------------")
 
 
 
-# Initialize Database instances
-# We store integrations in one table and metrics in others
-integrations_db = DynamoDB(table_name="Integrations")
-sync_tracker = SyncTracker()
+# Global references for lazy init
+integrations_db = None
+sync_tracker = None
+db_initialized = False
 
-def init_db():
+def init_db_logic():
+    global integrations_db, sync_tracker
     print("Initializing database tables...")
+    
+    # Initialize instances
+    integrations_db = DynamoDB(table_name="Integrations")
+    sync_tracker = SyncTracker()
+    
     integrations_db.create_table(pk='platform', sk='account_id', sk_type='S')
     
     # Create metrics table and GSI for fast range queries
@@ -69,8 +81,25 @@ app = FastAPI()
 from mangum import Mangum
 handler = Mangum(app)
 
-# Manual init on first load instead of lifespan
-init_db()
+def ensure_db():
+    global db_initialized
+    if not db_initialized:
+        init_db_logic()
+        db_initialized = True
+
+@app.middleware("http")
+async def catch_exceptions_middleware(request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as e:
+        import traceback
+        error_msg = f"Unhandled error: {str(e)}\n{traceback.format_exc()}"
+        print(error_msg)
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal Server Error", "error": str(e), "traceback": traceback.format_exc()}
+        )
 
 from fastapi.middleware.cors import CORSMiddleware
 

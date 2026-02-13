@@ -4,12 +4,7 @@ import json
 import os
 from dotenv import load_dotenv
 
-try:
-    from utils.security import decrypt_token
-except ImportError:
-    import sys
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from utils.security import decrypt_token
+from utils.security import decrypt_token
 
 # Load env
 ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'global.env')
@@ -19,13 +14,7 @@ if os.path.exists(ENV_PATH):
 # Google Ads API Version
 GOOGLE_ADS_VERSION = "v17"
 
-try:
-    from Database.database import DynamoDB
-except ImportError:
-    try:
-        from api.Database.database import DynamoDB
-    except ImportError:
-        from frontend.api.Database.database import DynamoDB
+from Database.database import DynamoDB
 
 # Initialize Database connections
 metrics_db = DynamoDB(table_name="GoogleAdsInsights")

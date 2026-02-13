@@ -3,13 +3,7 @@ import datetime
 import json
 import os
 from dotenv import load_dotenv
-try:
-    from utils.security import decrypt_token
-except ImportError:
-    # Handle path when run directly
-    import sys
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from utils.security import decrypt_token
+from utils.security import decrypt_token
 
 
 # Load env immediately to ensure DB has credentials
@@ -20,15 +14,7 @@ if os.path.exists(ENV_PATH):
 # Meta API Version
 FB_VERSION = "v24.0"
 
-# Import DynamoDB
-try:
-    from Database.database import DynamoDB
-except ImportError:
-    # Vercel might need absolute-ish import depending on execution
-    try:
-        from api.Database.database import DynamoDB
-    except ImportError:
-        from frontend.api.Database.database import DynamoDB
+from Database.database import DynamoDB
 
 # Initialize Database connections
 metrics_db = DynamoDB(table_name="MetaAdsInsights")
