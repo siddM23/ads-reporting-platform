@@ -62,6 +62,7 @@ def discover_accounts(access_token):
         }
         r = requests.get(url, headers=headers)
         if r.ok:
+            print(f"GOOGLE DISCOVERY: Raw response: {r.text}")
             resource_names = r.json().get("resourceNames", [])
             customer_ids = [rn.split("/")[-1] for rn in resource_names]
             print(f"GOOGLE DISCOVERY: Found {len(customer_ids)} accessible customers: {customer_ids}")
@@ -100,7 +101,6 @@ def fetch_for_customer(customer_id, token, days, login_customer_id=None):
                 customer.descriptive_name
             FROM campaign
             WHERE segments.date BETWEEN '{start_date}' AND '{end_date}'
-            AND metrics.cost_micros > 0
         """
 
         # 3. Request
@@ -118,10 +118,16 @@ def fetch_for_customer(customer_id, token, days, login_customer_id=None):
         r = requests.post(url, headers=headers, json=payload)
         
         if not r.ok:
-            print(f"[{customer_id}] GOOGLE API ERROR {r.status_code}: {r.text}")
+            print(f"[{customer_id}] GOOGLE API ERROR {r.status_code} (URL: {url}): {r.text}")
             r.raise_for_status()
         
-        rows = r.json().get("results", [])
+        full_response = r.json()
+        rows = full_response.get("results", [])
+        
+        if not rows:
+            print(f"[{customer_id}] Google returned 0 total campaign rows for date range {start_date} to {end_date}.")
+            # Log the request ID for support if needed
+            print(f"[{customer_id}] Request-ID: {r.headers.get('request-id')}")
         
         # 4. Transform to a format similar to Meta's for the frontend
         formatted_data = []
