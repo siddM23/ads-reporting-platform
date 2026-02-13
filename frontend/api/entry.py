@@ -5,7 +5,7 @@ import sys
 sys.path.append(os.path.dirname(__file__))
 
 from meta.meta_curl import fetch_and_store, fetch_and_store_all, get_cached_insights as get_meta_insights
-from google.google_curl import fetch_and_store as fetch_google, fetch_and_store_all as fetch_google_all, get_cached_insights as get_google_insights, discover_accounts
+from google_ads_custom.google_curl import fetch_and_store as fetch_google, fetch_and_store_all as fetch_google_all, get_cached_insights as get_google_insights, discover_accounts
 from Database.database import DynamoDB
 from dotenv import load_dotenv
 
@@ -377,7 +377,9 @@ def google_callback(code: str, background_tasks: BackgroundTasks):
     
     # 3. Save to Integrations table
     # We discover real Google Ads Customer IDs to match Meta's account-based strategy
-    customer_ids = discover_accounts(access_token, email=user_email)
+    # The discovery function now uses the official SDK which expects a token for initialization (preferably refresh_token)
+    token_for_discovery = refresh_token or access_token
+    customer_ids = discover_accounts(token_for_discovery, email=user_email)
     
     if not customer_ids:
         print(f"GOOGLE OAUTH: No customer IDs discovered, saving {user_email} as fallback.")
