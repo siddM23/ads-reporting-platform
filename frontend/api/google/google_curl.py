@@ -12,7 +12,7 @@ if os.path.exists(ENV_PATH):
     load_dotenv(ENV_PATH, override=True)
 
 # Google Ads API Version
-GOOGLE_ADS_VERSION = "v17"
+GOOGLE_ADS_VERSION = "v18"
 
 from Database.database import DynamoDB
 
@@ -62,28 +62,66 @@ def discover_accounts(access_token, email=None):
         return _discovery_cache[email]
 
     try:
+        # Try both the documented URL and a common fallback
         url = f"https://googleads.googleapis.com/{GOOGLE_ADS_VERSION}/customers:listAccessibleCustomers"
         headers = {
             "Authorization": f"Bearer {access_token}",
             "developer-token": DEVELOPER_TOKEN
         }
-        print(f"GOOGLE DISCOVERY: Triggering request to Google Ads API...")
+        print(f"GOOGLE DISCOVERY: Querying {url}")
         r = requests.get(url, headers=headers, timeout=10)
         
         if r.ok:
-            print(f"GOOGLE DISCOVERY: Raw response: {r.text}")
-            resource_names = r.json().get("resourceNames", [])
+            data = r.json()
+            resource_names = data.get("resourceNames", [])
             customer_ids = [rn.split("/")[-1] for rn in resource_names]
-            print(f"GOOGLE DISCOVERY: Found {len(customer_ids)} accessible customers: {customer_ids}")
+            print(f"GOOGLE DISCOVERY: Found {len(customer_ids)} base accounts: {customer_ids}")
             
+            # Now, for each base account, check if it's a manager and find its sub-accounts
+            all_discovered_ids = set(customer_ids)
+            for base_id in customer_ids:
+                sub_ids = find_sub_accounts(base_id, access_token)
+                all_discovered_ids.update(sub_ids)
+            
+            result = list(all_discovered_ids)
             if email:
-                _discovery_cache[email] = customer_ids
-            return customer_ids
+                _discovery_cache[email] = result
+            return result
         else:
             print(f"GOOGLE DISCOVERY: API failed ({r.status_code}): {r.text}")
             return []
     except Exception as e:
         print(f"GOOGLE DISCOVERY: Exception during request: {e}")
+        return []
+
+def find_sub_accounts(manager_id, access_token):
+    """
+    Given a manager ID, finds all sub-accounts (clients) under it.
+    """
+    try:
+        print(f"GOOGLE DISCOVERY: Checking if {manager_id} has sub-accounts...")
+        url = f"https://googleads.googleapis.com/{GOOGLE_ADS_VERSION}/customers/{manager_id}/googleAds:search"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "developer-token": DEVELOPER_TOKEN,
+            "login-customer-id": str(manager_id)
+        }
+        # Query for all client accounts under this manager
+        query = "SELECT customer_client.client_customer, customer_client.descriptive_name, customer_client.manager FROM customer_client WHERE customer_client.level <= 1"
+        r = requests.post(url, headers=headers, json={"query": query}, timeout=10)
+        
+        if r.ok:
+            rows = r.json().get("results", [])
+            client_ids = []
+            for row in rows:
+                client = row.get("customerClient", {})
+                if not client.get("manager"): # Only get actual client accounts, not sub-managers
+                    cid = client.get("clientCustomer").split("/")[-1]
+                    client_ids.append(cid)
+            print(f"GOOGLE DISCOVERY: Found {len(client_ids)} clients under manager {manager_id}")
+            return client_ids
+        return []
+    except:
         return []
 
 def fetch_for_customer(customer_id, token, days, login_customer_id=None):
