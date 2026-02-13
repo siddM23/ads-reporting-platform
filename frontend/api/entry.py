@@ -377,7 +377,7 @@ def google_callback(code: str, background_tasks: BackgroundTasks):
     
     # 3. Save to Integrations table
     # We discover real Google Ads Customer IDs to match Meta's account-based strategy
-    customer_ids = discover_accounts(access_token)
+    customer_ids = discover_accounts(access_token, email=user_email)
     
     if not customer_ids:
         print(f"GOOGLE OAUTH: No customer IDs discovered, saving {user_email} as fallback.")

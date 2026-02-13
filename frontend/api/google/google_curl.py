@@ -24,6 +24,9 @@ DEVELOPER_TOKEN = os.getenv("GOOGLE_DEVELOPER_TOKEN", "")
 CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 
+# Simple in-memory cache for discovery to prevent redundant calls in parallel threads
+_discovery_cache = {}
+
 def get_access_token(stored_token):
     """
     If stored_token starts with '1//', it's likely a refresh token. 
@@ -50,28 +53,37 @@ def get_access_token(stored_token):
         print(f"GOOGLE SYNC: Token refresh FAILED ({r.status_code}): {r.text}")
         return stored_token # Fallback
 
-def discover_accounts(access_token):
+def discover_accounts(access_token, email=None):
     """
     Returns a list of accessible customer IDs for the given token.
     """
+    if email and email in _discovery_cache:
+        print(f"GOOGLE DISCOVERY: Using cached IDs for {email}")
+        return _discovery_cache[email]
+
     try:
         url = f"https://googleads.googleapis.com/{GOOGLE_ADS_VERSION}/customers:listAccessibleCustomers"
         headers = {
             "Authorization": f"Bearer {access_token}",
             "developer-token": DEVELOPER_TOKEN
         }
-        r = requests.get(url, headers=headers)
+        print(f"GOOGLE DISCOVERY: Triggering request to Google Ads API...")
+        r = requests.get(url, headers=headers, timeout=10)
+        
         if r.ok:
             print(f"GOOGLE DISCOVERY: Raw response: {r.text}")
             resource_names = r.json().get("resourceNames", [])
             customer_ids = [rn.split("/")[-1] for rn in resource_names]
             print(f"GOOGLE DISCOVERY: Found {len(customer_ids)} accessible customers: {customer_ids}")
+            
+            if email:
+                _discovery_cache[email] = customer_ids
             return customer_ids
         else:
             print(f"GOOGLE DISCOVERY: API failed ({r.status_code}): {r.text}")
             return []
     except Exception as e:
-        print(f"GOOGLE DISCOVERY: Exception: {e}")
+        print(f"GOOGLE DISCOVERY: Exception during request: {e}")
         return []
 
 def fetch_for_customer(customer_id, token, days, login_customer_id=None):
@@ -203,7 +215,7 @@ def fetch_and_store(days: int = 7):
         customer_ids = []
         if "@" in str(cid):
             print(f"GOOGLE SYNC: CID is an email ({cid}), attempting discovery...")
-            customer_ids = discover_accounts(access_token)
+            customer_ids = discover_accounts(access_token, email=email)
             
             if customer_ids:
                 print(f"GOOGLE SYNC: Found {len(customer_ids)} IDs for {cid}. Updating integration records...")
