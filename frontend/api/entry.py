@@ -5,7 +5,7 @@ import sys
 sys.path.append(os.path.dirname(__file__))
 
 from meta.meta_curl import fetch_and_store, fetch_and_store_all, get_cached_insights as get_meta_insights
-from google.google_curl import fetch_and_store as fetch_google, fetch_and_store_all as fetch_google_all, get_cached_insights as get_google_insights
+from google.google_curl import fetch_and_store as fetch_google, fetch_and_store_all as fetch_google_all, get_cached_insights as get_google_insights, discover_accounts
 from Database.database import DynamoDB
 from dotenv import load_dotenv
 
@@ -17,7 +17,7 @@ if os.path.exists(ENV_PATH):
 from utils.security import encrypt_token
 from utils.sync_tracker import SyncTracker
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Optional
 from contextlib import asynccontextmanager
@@ -124,7 +124,7 @@ def health_check():
     ensure_db()
     return {"status": "ok", "message": "Backend is running"}
 
-import threading
+# import threading
 
 
 
@@ -173,11 +173,12 @@ def get_sync_status():
     return sync_tracker.get_status()
 
 @app.post("/api/insights/sync")
-def trigger_sync():
+def trigger_sync(background_tasks: BackgroundTasks):
     """
     Triggers a fresh sync from Meta API and updates DynamoDB.
     Enforces a rate limit of MAX_SYNCS per COOLDOWN_HOURS window.
     """
+    ensure_db()
     status = sync_tracker.get_status()
 
     if not status["can_sync"]:
@@ -193,15 +194,17 @@ def trigger_sync():
 
     def sync_with_tracking():
         """Wrapper that records the sync timestamp on success."""
+        print("SYNC TASK: Starting multi-platform sync...")
         try:
-            # Sync both platforms in background
-            fetch_and_store_all()
-            fetch_google_all()
+            # Sync both platforms
+            fetch_and_store_all() # Meta
+            fetch_google_all()    # Google
             sync_tracker.record_sync()
+            print("SYNC TASK: Success.")
         except Exception as e:
-            print(f"Sync failed, not recording timestamp: {e}")
+            print(f"SYNC TASK FAILED: {e}")
 
-    threading.Thread(target=sync_with_tracking).start()
+    background_tasks.add_task(sync_with_tracking)
 
     return {
         "status": "started",
@@ -339,8 +342,9 @@ def google_login():
     return {"url": url}
 
 @app.get("/api/auth/google/callback")
-def google_callback(code: str):
+def google_callback(code: str, background_tasks: BackgroundTasks):
     """Handles Google OAuth callback and exchanges code for tokens"""
+    ensure_db()
     if not code:
         raise HTTPException(status_code=400, detail="Code not provided")
 
@@ -357,6 +361,7 @@ def google_callback(code: str):
     data = r.json()
     
     if "error" in data:
+        print(f"GOOGLE OAUTH ERROR: {data}")
         return data
 
     access_token = data["access_token"]
@@ -365,36 +370,38 @@ def google_callback(code: str):
     # 2. Fetch User Email
     user_info_r = requests.get("https://www.googleapis.com/oauth2/v3/userinfo", 
                               params={"access_token": access_token})
-    user_email = user_info_r.json().get("email", "N/A")
+    user_info = user_info_r.json()
+    user_email = user_info.get("email", "N/A")
 
     print(f"GOOGLE OAUTH: Received callback for {user_email}")
     
     # 3. Save to Integrations table
-    # For Google, we use the email or a unique ID as account_id for now 
-    # until we can list Google Ads accounts specifically
-    success = integrations_db.save_integration(
-        platform="google",
-        account_id=user_email, # Standardizing on email for the connection itself
-        account_name=f"Google Account ({user_email})",
-        email=user_email,
-        access_token=encrypt_token(refresh_token or access_token)
-    )
+    # We discover real Google Ads Customer IDs to match Meta's account-based strategy
+    customer_ids = discover_accounts(access_token)
     
-    if success:
-        print(f"GOOGLE OAUTH: Successfully saved integration for {user_email}")
-    else:
-        print(f"GOOGLE OAUTH: FAILED to save integration for {user_email}")
+    if not customer_ids:
+        print(f"GOOGLE OAUTH: No customer IDs discovered, saving {user_email} as fallback.")
+        customer_ids = [user_email]
 
-    # 4. Immediate sync trigger
-    print(f"GOOGLE OAUTH: Triggering initial sync for {user_email}...")
-    try:
-        def initial_sync():
-            fetch_google_all()
-            print(f"GOOGLE OAUTH: Initial sync completed for {user_email}")
-        
-        threading.Thread(target=initial_sync).start()
-    except Exception as e:
-        print(f"GOOGLE OAUTH: Failed to start initial sync thread: {e}")
+    saved_count = 0
+    for cid in customer_ids:
+        success = integrations_db.save_integration(
+            platform="google",
+            account_id=cid,
+            account_name=f"Google Account ({cid})",
+            email=user_email,
+            access_token=encrypt_token(refresh_token or access_token)
+        )
+        if success:
+            saved_count += 1
+            print(f"GOOGLE OAUTH: Successfully saved integration for {cid}")
+
+    if saved_count > 0:
+        # 4. Trigger asynchronous sync
+        background_tasks.add_task(fetch_google_all)
+        print(f"GOOGLE OAUTH: Added background sync task for {saved_count} accounts")
+    else:
+        print(f"GOOGLE OAUTH: FAILED to save any integrations for {user_email}")
 
     # Redirect back to the frontend
     return RedirectResponse(url=f"{FRONTEND_URL}/integrations?success=true&platform=google")

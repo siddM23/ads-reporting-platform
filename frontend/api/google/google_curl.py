@@ -50,6 +50,29 @@ def get_access_token(stored_token):
         print(f"GOOGLE SYNC: Token refresh FAILED ({r.status_code}): {r.text}")
         return stored_token # Fallback
 
+def discover_accounts(access_token):
+    """
+    Returns a list of accessible customer IDs for the given token.
+    """
+    try:
+        url = f"https://googleads.googleapis.com/{GOOGLE_ADS_VERSION}/customers:listAccessibleCustomers"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "developer-token": DEVELOPER_TOKEN
+        }
+        r = requests.get(url, headers=headers)
+        if r.ok:
+            resource_names = r.json().get("resourceNames", [])
+            customer_ids = [rn.split("/")[-1] for rn in resource_names]
+            print(f"GOOGLE DISCOVERY: Found {len(customer_ids)} accessible customers: {customer_ids}")
+            return customer_ids
+        else:
+            print(f"GOOGLE DISCOVERY: API failed ({r.status_code}): {r.text}")
+            return []
+    except Exception as e:
+        print(f"GOOGLE DISCOVERY: Exception: {e}")
+        return []
+
 def fetch_for_customer(customer_id, token, days, login_customer_id=None):
     """
     Fetches campaign-level insights for a single Google Ads Account via REST API.
@@ -155,63 +178,32 @@ def fetch_and_store(days: int = 7):
         print("No Google integrations found.")
         return []
 
-    print(f"Syncing {len(integrations)} Google accounts for {days} days...")
+    print(f"GOOGLE SYNC: Starting fetch for {len(integrations)} integrations (Range: {days} days)")
     
     all_results = []
     
     for account in integrations:
         email = account.get('email')
         token = account.get('access_token')
+        cid = account.get('account_id')
         
-        if not email or not token:
+        if not email or not token or not cid:
+            print(f"GOOGLE SYNC: Skipping account due to missing data: {email} (CID: {cid})")
             continue
             
-        # For Google, we currently store email as account_id in Integrations.
-        # We might need to handle the case where we need to fetch multiple account IDs for one email.
-        # For now, let's assume one account or use a discovery step.
+        access_token = get_access_token(decrypt_token(token))
         
-        # 1. Exchange refresh token for access token
-        raw_token = decrypt_token(token)
-        access_token = get_access_token(raw_token)
+        print(f"GOOGLE SYNC: Fetching metrics for CID {cid} ({email})...")
+        account_data = fetch_for_customer(cid, access_token, days)
         
-        # 2. Fetch Customer ID
-        customer_ids = []
-        if "@" in account.get('account_id', ''):
-            # It's an email, let's try to discover customer IDs
-            try:
-                list_url = f"https://googleads.googleapis.com/{GOOGLE_ADS_VERSION}/customers:listAccessibleCustomers"
-                list_r = requests.get(list_url, headers={"Authorization": f"Bearer {access_token}", "developer-token": DEVELOPER_TOKEN})
-                if list_r.ok:
-                    resource_names = list_r.json().get("resourceNames", [])
-                    customer_ids = [rn.split("/")[-1] for rn in resource_names]
-                    print(f"GOOGLE SYNC: Discovered {len(customer_ids)} customer IDs for {email}: {customer_ids}")
-                else:
-                    print(f"GOOGLE SYNC: Discovery API failed for {email} ({list_r.status_code}): {list_r.text}")
-            except Exception as e:
-                print(f"GOOGLE SYNC: Discovery failed for {email}: {e}")
+        if account_data:
+            print(f"GOOGLE SYNC: Found {len(account_data)} campaigns for CID {cid}. Writing to DB...")
+            write_to_dynamodb(account_data, days)
+            all_results.extend(account_data)
         else:
-            customer_ids = [account.get('account_id')]
-
-        for cid in customer_ids:
-            # Fetch from Google Ads API
-            account_data = fetch_for_customer(cid, access_token, days)
+            print(f"GOOGLE SYNC: No performance data found for CID {cid} in the last {days} days.")
             
-            # Patch the integration record if account_name is missing
-            if not account.get('account_name') and account_data:
-                integrations_db.save_integration(
-                    platform='google',
-                    account_id=account.get('account_id'),
-                    email=email,
-                    access_token=token,
-                    account_name=account_data[0].get('account_name', f"Google Account {account.get('account_id')}")
-                )
-
-            # Batch write to DynamoDB
-            if account_data:
-                write_to_dynamodb(account_data, days)
-                all_results.extend(account_data)
-            
-    print(f"✅ Synced {len(all_results)} Google campaigns for {days} days")
+    print(f"✅ GOOGLE SYNC COMPLETE: Total {len(all_results)} campaigns synced for {days} days.")
     return all_results
 
 import concurrent.futures
