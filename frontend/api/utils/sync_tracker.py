@@ -14,7 +14,7 @@ import boto3
 from dotenv import load_dotenv
 
 # Load env for AWS credentials
-ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'global.env')
+ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'global.env')
 load_dotenv(ENV_PATH, override=True)
 
 MAX_SYNCS = 3

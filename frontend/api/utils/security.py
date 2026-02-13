@@ -3,7 +3,7 @@ from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 
 # Load environment variables
-ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'global.env')
+ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'global.env')
 load_dotenv(ENV_PATH, override=True)
 
 # Get the encryption key from environment

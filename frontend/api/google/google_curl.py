@@ -12,7 +12,7 @@ except ImportError:
     from utils.security import decrypt_token
 
 # Load env
-ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'global.env')
+ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'global.env')
 load_dotenv(ENV_PATH, override=True)
 
 # Google Ads API Version

@@ -13,7 +13,7 @@ except ImportError:
 
 
 # Load env immediately to ensure DB has credentials
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'global.env'), override=True)
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'global.env'), override=True)
 
 # Meta API Version
 FB_VERSION = "v24.0"
