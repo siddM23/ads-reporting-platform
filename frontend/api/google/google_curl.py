@@ -199,15 +199,44 @@ def fetch_and_store(days: int = 7):
             
         access_token = get_access_token(decrypt_token(token))
         
-        print(f"GOOGLE SYNC: Fetching metrics for CID {cid} ({email})...")
-        account_data = fetch_for_customer(cid, access_token, days)
-        
-        if account_data:
-            print(f"GOOGLE SYNC: Found {len(account_data)} campaigns for CID {cid}. Writing to DB...")
-            write_to_dynamodb(account_data, days)
-            all_results.extend(account_data)
+        # 2. Handle Case where CID is an email (needs discovery)
+        customer_ids = []
+        if "@" in str(cid):
+            print(f"GOOGLE SYNC: CID is an email ({cid}), attempting discovery...")
+            customer_ids = discover_accounts(access_token)
+            
+            if customer_ids:
+                print(f"GOOGLE SYNC: Found {len(customer_ids)} IDs for {cid}. Updating integration records...")
+                # Retroactively update/split integration records to use numeric IDs
+                for real_cid in customer_ids:
+                    integrations_db.save_integration(
+                        platform="google",
+                        account_id=real_cid,
+                        account_name=f"Google Account ({real_cid})",
+                        email=email,
+                        access_token=token # Keep existing encrypted token
+                    )
+                # Note: We should ideally delete the 'email' record, but let's keep it safe for now.
+            else:
+                print(f"GOOGLE SYNC: No numeric IDs found for {cid}. API calls will likely fail.")
+                customer_ids = [cid] # Fallback to original, likely will 404
         else:
-            print(f"GOOGLE SYNC: No performance data found for CID {cid} in the last {days} days.")
+            customer_ids = [cid]
+
+        for target_cid in customer_ids:
+            if "@" in str(target_cid):
+                print(f"GOOGLE SYNC: Skipping API call for non-numeric CID: {target_cid}")
+                continue
+
+            print(f"GOOGLE SYNC: Fetching metrics for numeric CID {target_cid} ({email})...")
+            account_data = fetch_for_customer(target_cid, access_token, days)
+            
+            if account_data:
+                print(f"GOOGLE SYNC: Found {len(account_data)} campaigns for CID {target_cid}. Writing to DB...")
+                write_to_dynamodb(account_data, days)
+                all_results.extend(account_data)
+            else:
+                print(f"GOOGLE SYNC: No performance data found for CID {target_cid} in the last {days} days.")
             
     print(f"✅ GOOGLE SYNC COMPLETE: Total {len(all_results)} campaigns synced for {days} days.")
     return all_results
