@@ -1,0 +1,11 @@
+global.env
+cred/
+*.env
+.env*
+node_modules/
+__pycache__/
+.next/
+dist/
+build/
+.DS_Store
+cred/*.json

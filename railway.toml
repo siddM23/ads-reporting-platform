@@ -1,0 +1,11 @@
+# Railway Deployment Configuration
+
+# Backend Service
+[services.backend]
+source = "backend"
+watch = true
+
+# Frontend Service
+[services.frontend]
+source = "frontend"
+watch = true
