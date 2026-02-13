@@ -279,7 +279,7 @@ def meta_callback(code: str):
         print(f"Post-login sync failed: {e}")
 
     # Redirect back to the frontend
-    return RedirectResponse(url="http://localhost:3000/integrations?success=true&platform=meta")
+    return RedirectResponse(url=f"{FRONTEND_URL}/integrations?success=true&platform=meta")
 
 @app.get("/auth/google/login")
 def google_login():
@@ -343,5 +343,5 @@ def google_callback(code: str):
     )
 
     # Redirect back to the frontend
-    return RedirectResponse(url="http://localhost:3000/integrations?success=true&platform=google")
+    return RedirectResponse(url=f"{FRONTEND_URL}/integrations?success=true&platform=google")
 
