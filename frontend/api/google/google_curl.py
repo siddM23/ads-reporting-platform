@@ -13,7 +13,8 @@ except ImportError:
 
 # Load env
 ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 'global.env')
-load_dotenv(ENV_PATH, override=True)
+if os.path.exists(ENV_PATH):
+    load_dotenv(ENV_PATH, override=True)
 
 # Google Ads API Version
 GOOGLE_ADS_VERSION = "v17"
@@ -21,7 +22,10 @@ GOOGLE_ADS_VERSION = "v17"
 try:
     from Database.database import DynamoDB
 except ImportError:
-    from backend.Database.database import DynamoDB
+    try:
+        from api.Database.database import DynamoDB
+    except ImportError:
+        from frontend.api.Database.database import DynamoDB
 
 # Initialize Database connections
 metrics_db = DynamoDB(table_name="GoogleAdsInsights")

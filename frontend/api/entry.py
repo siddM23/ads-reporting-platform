@@ -14,9 +14,11 @@ from utils.sync_tracker import SyncTracker
 
 
 # Load environment variables
-# Load environment variables
 ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'global.env')
-load_dotenv(ENV_PATH, override=True)
+if os.path.exists(ENV_PATH):
+    load_dotenv(ENV_PATH, override=True)
+else:
+    print(f"DEBUG: global.env not found at {ENV_PATH}, assuming Vercel environment variables are set.")
 
 # Meta OAuth Configuration
 META_CLIENT_ID = os.getenv("META_CLIENT_ID", "").replace('"', '').replace("'", "").strip()
@@ -62,15 +64,15 @@ def init_db():
 def cleanup():
     print("Shutting down...")
 
-@asynccontextmanager
-async def lifespan(app):
-    init_db()
-    yield
-    cleanup()
+# app = FastAPI(lifespan=lifespan)
+app = FastAPI()
+from mangum import Mangum
+handler = Mangum(app)
+
+# Manual init on first load instead of lifespan
+init_db()
 
 from fastapi.middleware.cors import CORSMiddleware
-
-app = FastAPI(lifespan=lifespan)
 
 # CORS configuration
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000").replace('"', '').replace("'", "").strip()
@@ -87,8 +89,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+db_initialized = False
+
+def ensure_db():
+    global db_initialized
+    if not db_initialized:
+        init_db()
+        db_initialized = True
+
 @app.get("/")
 def health_check():
+    ensure_db()
     return {"status": "ok", "message": "Backend is running"}
 
 import threading
@@ -116,6 +127,7 @@ def get_all_insights():
     """
     Returns all ranges (7, 30, 180 days) for both Meta and Google.
     """
+    ensure_db()
     meta_7 = get_meta_insights(7)
     meta_30 = get_meta_insights(30)
     meta_180 = get_meta_insights(180)
@@ -135,6 +147,7 @@ def get_sync_status():
     """
     Returns current sync rate-limit status for the frontend.
     """
+    ensure_db()
     return sync_tracker.get_status()
 
 @app.post("/insights/sync")
@@ -176,6 +189,7 @@ def trigger_sync():
 
 @app.get("/integrations")
 def list_integrations(platform: Optional[str] = None):
+    ensure_db()
     results = integrations_db.list_integrations(platform=platform)
     for res in results:
         # Fallback for older records missing account_name
