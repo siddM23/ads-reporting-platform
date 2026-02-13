@@ -367,16 +367,34 @@ def google_callback(code: str):
                               params={"access_token": access_token})
     user_email = user_info_r.json().get("email", "N/A")
 
+    print(f"GOOGLE OAUTH: Received callback for {user_email}")
+    
     # 3. Save to Integrations table
     # For Google, we use the email or a unique ID as account_id for now 
     # until we can list Google Ads accounts specifically
-    integrations_db.save_integration(
+    success = integrations_db.save_integration(
         platform="google",
         account_id=user_email, # Standardizing on email for the connection itself
         account_name=f"Google Account ({user_email})",
         email=user_email,
         access_token=encrypt_token(refresh_token or access_token)
     )
+    
+    if success:
+        print(f"GOOGLE OAUTH: Successfully saved integration for {user_email}")
+    else:
+        print(f"GOOGLE OAUTH: FAILED to save integration for {user_email}")
+
+    # 4. Immediate sync trigger
+    print(f"GOOGLE OAUTH: Triggering initial sync for {user_email}...")
+    try:
+        def initial_sync():
+            fetch_google_all()
+            print(f"GOOGLE OAUTH: Initial sync completed for {user_email}")
+        
+        threading.Thread(target=initial_sync).start()
+    except Exception as e:
+        print(f"GOOGLE OAUTH: Failed to start initial sync thread: {e}")
 
     # Redirect back to the frontend
     return RedirectResponse(url=f"{FRONTEND_URL}/integrations?success=true&platform=google")
