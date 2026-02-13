@@ -15,7 +15,7 @@ from utils.sync_tracker import SyncTracker
 
 # Load environment variables
 # Load environment variables
-ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'global.env')
+ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'global.env')
 load_dotenv(ENV_PATH, override=True)
 
 # Meta OAuth Configuration
