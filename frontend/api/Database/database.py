@@ -1,4 +1,5 @@
 import boto3
+import aioboto3
 import os
 from typing import Dict, Any, List
 
@@ -8,12 +9,16 @@ class DynamoDB:
         Initialize DynamoDB connection.
         If table_name is not provided, it looks for DYNAMODB_TABLE env var.
         """
-        # Explicitly pass credentials to ensure they are picked up from env
+        self.region = os.getenv("AWS_REGION", "us-east-1")
+        self.access_key = os.getenv("AWS_ACCESS_KEY_ID")
+        self.secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+        
+        # Sync client
         self.dynamodb = boto3.resource(
             'dynamodb',
-            region_name=os.getenv("AWS_REGION", "us-east-1"),
-            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
+            region_name=self.region,
+            aws_access_key_id=self.access_key,
+            aws_secret_access_key=self.secret_key
         )
         self.table_name = table_name or os.getenv("DYNAMODB_TABLE")
         
@@ -22,6 +27,174 @@ class DynamoDB:
         else:
             self.table = None
             print("Warning: Database initialized without a table_name.")
+
+        # Async session
+        self.session = aioboto3.Session()
+        self.async_resource = None
+        self.async_table = None
+
+    async def connect(self):
+        """
+        Initializes the async boto3 resource and table.
+        Must be called at app startup.
+        """
+        if self.async_resource:
+            return
+
+        print(f"DEBUG: Connecting to DynamoDB table {self.table_name} asynchronously...")
+        self._resource_cm = self.session.resource(
+            "dynamodb",
+            region_name=self.region,
+            aws_access_key_id=self.access_key,
+            aws_secret_access_key=self.secret_key,
+        )
+        self.async_resource = await self._resource_cm.__aenter__()
+        self.async_table = await self.async_resource.Table(self.table_name)
+        print(f"DEBUG: Connected to {self.table_name}.")
+
+    async def close(self):
+        """
+        Closes the async boto3 resource.
+        """
+        if self.async_resource:
+            print(f"DEBUG: Closing connection to {self.table_name}...")
+            await self.async_resource.__aexit__(None, None, None)
+            self.async_resource = None
+            self.async_table = None
+
+    async def async_read_campaign_metrics(self, range_days: int) -> List[Dict[str, Any]]:
+        """
+        Asynchronously reads all campaign metrics for a specific time range using GSI query.
+        """
+        try:
+            from boto3.dynamodb.conditions import Key
+            
+            if self.async_table:
+                # Use persistent connection
+                response = await self.async_table.query(
+                    IndexName='RangeDaysIndex',
+                    KeyConditionExpression=Key('range_days').eq(int(range_days))
+                )
+                items = response.get('Items', [])
+                
+                while 'LastEvaluatedKey' in response:
+                    response = await self.async_table.query(
+                        IndexName='RangeDaysIndex',
+                        KeyConditionExpression=Key('range_days').eq(int(range_days)),
+                        ExclusiveStartKey=response['LastEvaluatedKey']
+                    )
+                    items.extend(response.get('Items', []))
+                
+                return items
+            else:
+                # Fallback to creating new connection (slow)
+                async with self.session.resource(
+                    'dynamodb',
+                    region_name=self.region,
+                    aws_access_key_id=self.access_key,
+                    aws_secret_access_key=self.secret_key
+                ) as dynamodb:
+                    table = await dynamodb.Table(self.table_name)
+                    
+                    response = await table.query(
+                        IndexName='RangeDaysIndex',
+                        KeyConditionExpression=Key('range_days').eq(int(range_days))
+                    )
+                    
+                    items = response.get('Items', [])
+                    
+                    while 'LastEvaluatedKey' in response:
+                        response = await table.query(
+                            IndexName='RangeDaysIndex',
+                            KeyConditionExpression=Key('range_days').eq(int(range_days)),
+                            ExclusiveStartKey=response['LastEvaluatedKey']
+                        )
+                        items.extend(response.get('Items', []))
+                    
+                    return items
+        except Exception as e:
+            print(f"Async GSI query failed, falling back to sync scan via thread: {e}")
+            # Fallback to sync version if something goes wrong with async
+            import asyncio
+            return await asyncio.to_thread(self.read_campaign_metrics, range_days)
+
+    async def async_list_integrations(self, platform: str = None) -> List[Dict[str, Any]]:
+        """
+        Asynchronously lists all integrations.
+        """
+        try:
+            if self.async_table:
+                if platform:
+                    response = await self.async_table.query(
+                        KeyConditionExpression="platform = :p",
+                        ExpressionAttributeValues={":p": platform}
+                    )
+                else:
+                    response = await self.async_table.scan()
+                return response.get('Items', [])
+            else:
+                async with self.session.resource(
+                    'dynamodb',
+                    region_name=self.region,
+                    aws_access_key_id=self.access_key,
+                    aws_secret_access_key=self.secret_key
+                ) as dynamodb:
+                    table = await dynamodb.Table(self.table_name)
+                    
+                    if platform:
+                        response = await table.query(
+                            KeyConditionExpression="platform = :p",
+                            ExpressionAttributeValues={":p": platform}
+                        )
+                    else:
+                        response = await table.scan()
+                    return response.get('Items', [])
+        except Exception as e:
+            print(f"Async list integrations failed: {e}")
+            import asyncio
+            return await asyncio.to_thread(self.list_integrations, platform)
+
+    async def async_query(self, **kwargs) -> Dict[str, Any]:
+        """
+        Asynchronously queries the table.
+        """
+        try:
+            if self.async_table:
+                return await self.async_table.query(**kwargs)
+            else:
+                async with self.session.resource(
+                    'dynamodb',
+                    region_name=self.region,
+                    aws_access_key_id=self.access_key,
+                    aws_secret_access_key=self.secret_key
+                ) as dynamodb:
+                    table = await dynamodb.Table(self.table_name)
+                    return await table.query(**kwargs)
+        except Exception as e:
+            print(f"Async query failed: {e}")
+            import asyncio
+            return await asyncio.to_thread(self.table.query, **kwargs)
+
+    async def async_put_item(self, **kwargs) -> Dict[str, Any]:
+        """
+        Asynchronously puts an item in the table.
+        """
+        try:
+            if self.async_table:
+                return await self.async_table.put_item(**kwargs)
+            else:
+                async with self.session.resource(
+                    'dynamodb',
+                    region_name=self.region,
+                    aws_access_key_id=self.access_key,
+                    aws_secret_access_key=self.secret_key
+                ) as dynamodb:
+                    table = await dynamodb.Table(self.table_name)
+                    return await table.put_item(**kwargs)
+        except Exception as e:
+            print(f"Async put item failed: {e}")
+            import asyncio
+            return await asyncio.to_thread(self.table.put_item, **kwargs)
 
     def write_campaign_metrics(self, campaign_id: str, range_days: int, metrics: Dict[str, Any]):
         """
@@ -152,6 +325,54 @@ class DynamoDB:
             return True
         except Exception as e:
             print(f"Error saving integration: {str(e)}")
+            return False
+
+    def delete_integration(self, platform: str, account_id: str):
+        """
+        Deletes an integration from the table.
+        """
+        try:
+            self.table.delete_item(
+                Key={
+                    'platform': platform,
+                    'account_id': str(account_id)
+                }
+            )
+            return True
+        except Exception as e:
+            print(f"Error deleting integration: {str(e)}")
+            return False
+
+    async def async_delete_integration(self, platform: str, account_id: str):
+        """
+        Asynchronously deletes an integration from the table.
+        """
+        try:
+            if self.async_table:
+                await self.async_table.delete_item(
+                    Key={
+                        'platform': platform,
+                        'account_id': str(account_id)
+                    }
+                )
+                return True
+            else:
+                async with self.session.resource(
+                    'dynamodb',
+                    region_name=self.region,
+                    aws_access_key_id=self.access_key,
+                    aws_secret_access_key=self.secret_key
+                ) as dynamodb:
+                    table = await dynamodb.Table(self.table_name)
+                    await table.delete_item(
+                        Key={
+                            'platform': platform,
+                            'account_id': str(account_id)
+                        }
+                    )
+                    return True
+        except Exception as e:
+            print(f"Error asynchronously deleting integration: {str(e)}")
             return False
 
     def list_integrations(self, platform: str = None) -> List[Dict[str, Any]]:

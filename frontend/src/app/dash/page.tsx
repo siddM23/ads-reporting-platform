@@ -2,7 +2,9 @@
 
 import React, { useState, useEffect, useMemo } from "react";
 import { ChevronDown, ChevronRight, AlertCircle, RefreshCcw, Clock } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
+import { authFetch } from "@/lib/auth-context";
 
 interface MetricRowProps {
     label: string;
@@ -60,7 +62,7 @@ const MetricRow: React.FC<MetricRowProps> = ({
             <td className="py-4 px-4 text-center text-sm font-medium">
                 <span className={cn(
                     "px-2 py-1 rounded-lg text-[13px] font-bold",
-                    parseFloat(metrics.last7.roas) < 3 ? "text-red-500 bg-red-50" : "text-slate-900"
+                    parseFloat(metrics.last7.roas) < 1 ? "text-red-500 bg-red-50" : "text-slate-900"
                 )}>
                     {metrics.last7.roas}
                 </span>
@@ -70,7 +72,7 @@ const MetricRow: React.FC<MetricRowProps> = ({
             <td className="py-4 px-4 text-center text-sm font-medium border-r border-slate-100/50">
                 <span className={cn(
                     "px-2 py-1 rounded-lg text-[13px] font-bold",
-                    parseFloat(metrics.last7.cac.replace('$', '')) > 30 ? "text-red-500 bg-red-50" : "text-slate-900"
+                    parseFloat(metrics.last7.cac.replace('$', '')) 
                 )}>
                     {metrics.last7.cac}
                 </span>
@@ -95,17 +97,33 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "/api";
 
 export default function DashPage() {
     const [activeTab, setActiveTab] = useState("Meta Ads");
-    const [rawApiData, setRawApiData] = useState<any>(null);
-    const [isLoading, setIsLoading] = useState(false);
     const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
-    const [syncStatus, setSyncStatus] = useState<{
-        syncs_remaining: number;
-        max_syncs: number;
-        can_sync: boolean;
-        cooldown_seconds_remaining: number;
-        next_free_at: string | null;
-    } | null>(null);
     const [cooldownDisplay, setCooldownDisplay] = useState("");
+    const [isSyncing, setIsSyncing] = useState(false);
+
+    const queryClient = useQueryClient();
+
+    // Fetch Insights Data
+    const { data: rawApiData, isLoading: isDataLoading, refetch: refetchData } = useQuery({
+        queryKey: ["insights"],
+        queryFn: async () => {
+            const res = await authFetch(`${API_URL}/insights/all`);
+            if (!res.ok) throw new Error("Failed to fetch data");
+            return res.json();
+        },
+        staleTime: 1000 * 60 * 5, // 5 minutes
+    });
+
+    // Fetch Sync Status
+    const { data: syncStatus, refetch: refetchSyncStatus } = useQuery({
+        queryKey: ["sync-status"],
+        queryFn: async () => {
+            const res = await authFetch(`${API_URL}/insights/sync-status`);
+            if (!res.ok) return null;
+            return res.json();
+        },
+        refetchInterval: 1000 * 30, // Check every 30s
+    });
 
     const toggleRow = (label: string) => {
         setExpandedRows(prev => ({ ...prev, [label]: !prev[label] }));
@@ -257,22 +275,6 @@ export default function DashPage() {
         return processData(rawApiData, activeTab);
     }, [rawApiData, activeTab]);
 
-    const fetchSyncStatus = async () => {
-        try {
-            const res = await fetch(`${API_URL}/insights/sync-status`);
-            if (!res.ok) return null;
-            const json = await res.json();
-            if (json && typeof json === 'object' && 'can_sync' in json) {
-                setSyncStatus(json);
-                return json;
-            }
-            return null;
-        } catch (e) {
-            console.error("Failed to fetch sync status", e);
-            return null;
-        }
-    };
-
     // Cooldown countdown timer
     useEffect(() => {
         if (!syncStatus || syncStatus.can_sync) {
@@ -288,7 +290,7 @@ export default function DashPage() {
 
             if (diffMs <= 0) {
                 setCooldownDisplay("");
-                fetchSyncStatus(); // Re-check, a slot may have freed
+                refetchSyncStatus(); // Re-check, a slot may have freed
                 return;
             }
 
@@ -303,44 +305,44 @@ export default function DashPage() {
         updateCountdown();
         const interval = setInterval(updateCountdown, 1000);
         return () => clearInterval(interval);
-    }, [syncStatus]);
+    }, [syncStatus, refetchSyncStatus]);
 
     const handleSync = async () => {
         // Refresh status first
-        const status = await fetchSyncStatus();
+        const { data: status } = await refetchSyncStatus();
         if (status && !status.can_sync) {
             return; // UI will show the limit message
         }
 
-        setIsLoading(true);
+        setIsSyncing(true);
 
         // 1. Trigger the background sync
         console.log("Triggering sync...");
         try {
-            const syncRes = await fetch(`${API_URL}/insights/sync`, { method: "POST" });
+            const syncRes = await authFetch(`${API_URL}/insights/sync`, { method: "POST" });
             if (syncRes.status === 429) {
                 const errData = await syncRes.json();
                 console.warn("Sync rate limited:", errData.detail);
-                await fetchSyncStatus();
-                setIsLoading(false);
+                await refetchSyncStatus();
+                setIsSyncing(false);
                 return;
             }
         } catch (e) {
             console.error("Sync trigger failed:", e);
-            setIsLoading(false);
+            setIsSyncing(false);
             return;
         }
 
-        // 2. Poll DynamoDB every 2 seconds for 30 seconds to show live progress
+        // 2. Poll every 2 seconds for 30 seconds to show live progress
         let pollCount = 0;
         const maxPolls = 15; // 15 polls * 2s = 30s max
 
         const pollInterval = setInterval(async () => {
             try {
-                const res = await fetch(`${API_URL}/insights/all`);
-                const json = await res.json();
-                setRawApiData(json);
-                console.log(`Poll ${pollCount + 1}: 7d=${json["7"]?.length || 0}, 30d=${json["30"]?.length || 0}, 180d=${json["180"]?.length || 0}`);
+                // Determine if we should really Refetch or just invalidate. 
+                // Refetch gives us the new data to stick in state if we were using state,
+                // but here useQuery handles it. Calling refetchData() updates the cache.
+                await refetchData();
             } catch (e) {
                 console.error("Poll failed:", e);
             }
@@ -348,8 +350,8 @@ export default function DashPage() {
             pollCount++;
             if (pollCount >= maxPolls) {
                 clearInterval(pollInterval);
-                setIsLoading(false);
-                fetchSyncStatus(); // Refresh status after sync completes
+                setIsSyncing(false);
+                refetchSyncStatus();
                 console.log("Sync polling complete");
             }
         }, 2000);
@@ -357,31 +359,10 @@ export default function DashPage() {
         // Safety: Stop after 32s regardless
         setTimeout(() => {
             clearInterval(pollInterval);
-            setIsLoading(false);
-            fetchSyncStatus();
+            setIsSyncing(false);
+            refetchSyncStatus();
         }, 32000);
     };
-
-    useEffect(() => {
-        // Initial load - Fetch all ranges from DB
-        const loadInitialData = async () => {
-            try {
-                const res = await fetch(`${API_URL}/insights/all`);
-                if (!res.ok) {
-                    console.error(`API Error: ${res.status}`);
-                    return;
-                }
-                const json = await res.json();
-                if (json && typeof json === 'object') {
-                    setRawApiData(json);
-                }
-            } catch (e) {
-                console.error("Initial load failed", e);
-            }
-        };
-        loadInitialData();
-        fetchSyncStatus();
-    }, []);
 
     return (
         <div className="p-8">
@@ -413,7 +394,7 @@ export default function DashPage() {
                     <p className="text-slate-500">Track and analyze your ad campaign performance across platforms</p>
                 </div>
                 <div className="flex items-center gap-3">
-                    {syncStatus && !syncStatus.can_sync && (
+                    {syncStatus && typeof syncStatus === 'object' && !syncStatus.can_sync && (
                         <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 border border-amber-200 rounded-xl text-sm">
                             <Clock size={14} className="text-amber-500" />
                             <span className="text-amber-700 font-medium">
@@ -423,13 +404,13 @@ export default function DashPage() {
                     )}
                     <button
                         onClick={handleSync}
-                        disabled={isLoading || (syncStatus !== null && !syncStatus.can_sync)}
+                        disabled={isSyncing || (syncStatus && typeof syncStatus === 'object' && !syncStatus.can_sync)}
                         className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                        <RefreshCcw size={16} className={cn(isLoading && "animate-spin")} />
-                        {isLoading
+                        <RefreshCcw size={16} className={cn(isSyncing && "animate-spin")} />
+                        {isSyncing
                             ? "Syncing..."
-                            : syncStatus
+                            : (syncStatus && typeof syncStatus === 'object')
                                 ? `Sync Data (${syncStatus.syncs_remaining}/${syncStatus.max_syncs})`
                                 : "Sync Data"
                         }

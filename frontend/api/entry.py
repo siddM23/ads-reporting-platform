@@ -1,11 +1,15 @@
 import os
 import sys
+import asyncio # Added for asyncio.gather
 
 # Ensure the current directory is in the path for finding siblings like 'meta', 'google', 'Database'
 sys.path.append(os.path.dirname(__file__))
 
-from meta.meta_curl import fetch_and_store, fetch_and_store_all, get_cached_insights as get_meta_insights
-from google_ads_custom.google_curl import fetch_and_store as fetch_google, fetch_and_store_all as fetch_google_all, get_cached_insights as get_google_insights, discover_accounts
+# Removed direct imports for get_cached_insights as they are now wrapped
+from meta.meta_curl import fetch_and_store, fetch_and_store_all
+import meta.meta_curl as meta_module
+from google_ads.google_sdk import fetch_and_store as fetch_google, fetch_and_store_all as fetch_google_all, discover_accounts
+import google_ads.google_sdk as google_module
 from Database.database import DynamoDB
 from dotenv import load_dotenv
 
@@ -17,12 +21,27 @@ if os.path.exists(ENV_PATH):
 from utils.security import encrypt_token
 from utils.sync_tracker import SyncTracker
 
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Depends
 from pydantic import BaseModel
 from typing import List, Optional
 from contextlib import asynccontextmanager
 import requests
 import urllib.parse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from utils.security import verify_access_token, get_password_hash, verify_password, create_access_token
+
+security = HTTPBearer()
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    payload = verify_access_token(token)
+    if not payload or "email" not in payload:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return payload
 
 # Meta OAuth Configuration
 META_CLIENT_ID = os.getenv("META_CLIENT_ID", "").replace('"', '').replace("'", "").strip()
@@ -35,56 +54,60 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "").replace('"', '').re
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/api/auth/google/callback").replace('"', '').replace("'", "").strip()
 GOOGLE_DEVELOPER_TOKEN = os.getenv("GOOGLE_DEVELOPER_TOKEN", "").replace('"', '').replace("'", "").strip()
 
-print(f"--- OAUTH CONFIG DIAGNOSTICS ---")
-print(f"META_CLIENT_ID: {META_CLIENT_ID}")
-print(f"META_REDIRECT_URI: {META_REDIRECT_URI}")
-print(f"GOOGLE_CLIENT_ID: {GOOGLE_CLIENT_ID}")
-print(f"GOOGLE_REDIRECT_URI: {GOOGLE_REDIRECT_URI}")
-print(f"GOOGLE_DEVELOPER_TOKEN: {'SET' if GOOGLE_DEVELOPER_TOKEN else 'MISSING'}")
-print(f"----------------------------------")
+# print(f"--- OAUTH CONFIG DIAGNOSTICS ---")
+# print(f"META_CLIENT_ID: {META_CLIENT_ID}")
+# print(f"META_REDIRECT_URI: {META_REDIRECT_URI}")
+# print(f"GOOGLE_CLIENT_ID: {GOOGLE_CLIENT_ID}")
+# print(f"GOOGLE_REDIRECT_URI: {GOOGLE_REDIRECT_URI}")
+# print(f"GOOGLE_DEVELOPER_TOKEN: {'SET' if GOOGLE_DEVELOPER_TOKEN else 'MISSING'}")
+# print(f"----------------------------------")
 
 
 
 
 # Global references for lazy init
 integrations_db = None
+users_db = None
 sync_tracker = None
-db_initialized = False
 
 def init_db_logic():
-    global integrations_db, sync_tracker
-    print("Initializing database tables...")
+    global integrations_db, users_db, sync_tracker
     
-    # Initialize instances
+    # Initialize instances without creating tables
+    # The API assumes tables are already created by the setup script
+    print("DEBUG: Initializing Database...")
     integrations_db = DynamoDB(table_name="Integrations")
+    users_db = DynamoDB(table_name="Users")
     sync_tracker = SyncTracker()
+    print(f"DEBUG: integrations_db initialized: {integrations_db is not None}")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
+    init_db_logic()
     
-    integrations_db.create_table(pk='platform', sk='account_id', sk_type='S')
+    # Initialize persistent async connections
+    print("LIFESPAN: Connecting to databases...")
+    if integrations_db: await integrations_db.connect()
+    if users_db: await users_db.connect()
+    if sync_tracker: 
+        # SyncTracker might use DB internally? No, looks like in-memory or simple. 
+        # Checked file listing, sync_tracker.py is there. Assuming it doesn't need async connect yet or uses its own.
+        pass
+        
+    await meta_module.init_db()
+    await google_module.init_db()
     
-    # Create metrics table and GSI for fast range queries
-    metrics_db = DynamoDB(table_name="MetaAdsInsights")
-    metrics_db.create_table(pk='campaign_id', sk='range_days', sk_type='N')
-    metrics_db.create_range_days_gsi()  # Add GSI for ~100x faster queries
+    yield
+    
+    # Shutdown logic
+    print("LIFESPAN: Closing database connections...")
+    if integrations_db: await integrations_db.close()
+    if users_db: await users_db.close()
+    await meta_module.close_db()
+    await google_module.close_db()
 
-    # Create Google metrics table
-    google_metrics_db = DynamoDB(table_name="GoogleAdsInsights")
-    google_metrics_db.create_table(pk='campaign_id', sk='range_days', sk_type='N')
-    google_metrics_db.create_range_days_gsi()
-
-def cleanup():
-    print("Shutting down...")
-
-# app = FastAPI(lifespan=lifespan)
-app = FastAPI()
-
-# Database initialization state
-db_initialized = False
-
-def ensure_db():
-    global db_initialized
-    if not db_initialized:
-        init_db_logic()
-        db_initialized = True
+app = FastAPI(lifespan=lifespan)
 
 @app.middleware("http")
 async def catch_exceptions_middleware(request, call_next):
@@ -92,12 +115,23 @@ async def catch_exceptions_middleware(request, call_next):
         return await call_next(request)
     except Exception as e:
         import traceback
+        is_prod = os.getenv("VERCEL") or os.getenv("ENVIRONMENT") == "production"
+        
+        # Always log full error to console
         error_msg = f"Unhandled error: {str(e)}\n{traceback.format_exc()}"
         print(error_msg)
+        
         from fastapi.responses import JSONResponse
+        
+        content = {"detail": "Internal Server Error"}
+        if not is_prod:
+            # Only include details/traceback in non-production
+            content["error"] = str(e)
+            content["traceback"] = traceback.format_exc()
+            
         return JSONResponse(
             status_code=500,
-            content={"detail": "Internal Server Error", "error": str(e), "traceback": traceback.format_exc()}
+            content=content
         )
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -117,11 +151,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Removed redundant ensure_db definition
-
 @app.get("/api/")
-def health_check():
-    ensure_db()
+async def health_check():
     return {"status": "ok", "message": "Backend is running"}
 
 # import threading
@@ -134,29 +165,53 @@ class IntegrationRequest(BaseModel):
     email: str
     access_token: str
 
+class UserAuthRequest(BaseModel):
+    email: str
+    password: str
 
-from meta.meta_curl import fetch_and_store, fetch_and_store_all, get_cached_insights
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    email: str
+
+# New async wrappers for insights
+async def get_meta_insights(days: int = 7):
+    from meta.meta_curl import async_get_cached_insights
+    return await async_get_cached_insights(days)
+
+async def get_google_insights(days: int = 7):
+    from google_ads.google_sdk import async_get_cached_insights
+    return await async_get_cached_insights(days)
+
 
 @app.get("/api/insights")
-def get_insights(range: int = Query(7)):
+async def get_insights(range: int = Query(7), user: dict = Depends(get_current_user)):
     """
     Returns cached data from DynamoDB. Does NOT trigger a Meta API fetch.
     """
-    return get_cached_insights(range)
+    # This endpoint now needs to decide which platform's insights to return,
+    # or return a combined view. For now, let's assume it returns Meta insights
+    # as it did before, but using the new async wrapper.
+    # If a combined view is desired, this endpoint's logic would need to change.
+    return await get_meta_insights(range)
 
 @app.get("/api/insights/all")
-def get_all_insights():
+async def get_all_insights(user: dict = Depends(get_current_user)):
     """
     Returns all ranges (7, 30, 180 days) for both Meta and Google.
     """
-    ensure_db()
-    meta_7 = get_meta_insights(7)
-    meta_30 = get_meta_insights(30)
-    meta_180 = get_meta_insights(180)
-
-    google_7 = get_google_insights(7)
-    google_30 = get_google_insights(30)
-    google_180 = get_google_insights(180)
+    # Fetch all ranges in parallel using asyncio.gather
+    # Each call is now an async DB query via aioboto3
+    results = await asyncio.gather(
+        get_meta_insights(7),
+        get_meta_insights(30),
+        get_meta_insights(180),
+        get_google_insights(7),
+        get_google_insights(30),
+        get_google_insights(180)
+    )
+    
+    meta_7, meta_30, meta_180, google_7, google_30, google_180 = results
 
     return {
         "7": meta_7 + google_7,
@@ -165,20 +220,18 @@ def get_all_insights():
     }
 
 @app.get("/api/insights/sync-status")
-def get_sync_status():
+async def get_sync_status():
     """
     Returns current sync rate-limit status for the frontend.
     """
-    ensure_db()
     return sync_tracker.get_status()
 
 @app.post("/api/insights/sync")
-def trigger_sync(background_tasks: BackgroundTasks):
+async def trigger_sync(background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     """
     Triggers a fresh sync from Meta API and updates DynamoDB.
     Enforces a rate limit of MAX_SYNCS per COOLDOWN_HOURS window.
     """
-    ensure_db()
     status = sync_tracker.get_status()
 
     if not status["can_sync"]:
@@ -213,9 +266,13 @@ def trigger_sync(background_tasks: BackgroundTasks):
     }
 
 @app.get("/api/integrations")
-def list_integrations(platform: Optional[str] = None):
-    ensure_db()
-    results = integrations_db.list_integrations(platform=platform)
+async def get_integrations(user: dict = Depends(get_current_user)):
+    print(f"DEBUG: get_integrations called. integrations_db is None? {integrations_db is None}")
+    if integrations_db is None:
+        print("DEBUG: integrations_db is NONE, re-initializing...")
+        init_db_logic()
+    # Return all connected accounts
+    results = await integrations_db.async_list_integrations()
     for res in results:
         # Fallback for older records missing account_name
         if 'account_name' not in res:
@@ -227,7 +284,7 @@ def list_integrations(platform: Optional[str] = None):
 
 
 @app.post("/api/integrations")
-def add_integration(req: IntegrationRequest):
+async def add_integration(req: IntegrationRequest, user: dict = Depends(get_current_user)):
     success = integrations_db.save_integration(
         platform=req.platform,
         account_id=req.account_id,
@@ -238,6 +295,69 @@ def add_integration(req: IntegrationRequest):
     if not success:
         raise HTTPException(status_code=500, detail="Failed to save integration")
     return {"message": f"Successfully connected {req.platform} account {req.account_id}"}
+
+
+@app.delete("/api/integrations/{platform}/{account_id}")
+async def delete_integration(platform: str, account_id: str, user: dict = Depends(get_current_user)):
+    """
+    Deletes an integration for a specific platform and account ID.
+    """
+    if integrations_db is None:
+        init_db_logic()
+
+    success = await integrations_db.async_delete_integration(platform, account_id)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to delete integration")
+    
+    return {"message": f"Successfully deleted {platform} account {account_id}"}
+
+@app.post("/api/auth/register")
+async def register(req: UserAuthRequest):
+    # Check if user exists
+    # DynamoDB.table.get_item(Key={'email': req.email})
+    try:
+        from boto3.dynamodb.conditions import Key
+        response = await users_db.async_query(KeyConditionExpression=Key('email').eq(req.email))
+        if response.get('Items'):
+            raise HTTPException(status_code=400, detail="Email already registered")
+        
+        import datetime
+        timestamp = datetime.datetime.utcnow().isoformat()
+        
+        await users_db.async_put_item(Item={
+            'email': req.email,
+            'password_hash': get_password_hash(req.password),
+            'created_at': timestamp
+        })
+        
+        token = create_access_token({"email": req.email})
+        return AuthResponse(access_token=token, email=req.email)
+    except Exception as e:
+        print(f"Registration error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error during registration")
+
+@app.post("/api/auth/login")
+async def login(req: UserAuthRequest):
+    try:
+        from boto3.dynamodb.conditions import Key
+        response = await users_db.async_query(KeyConditionExpression=Key('email').eq(req.email))
+        items = response.get('Items', [])
+        
+        if not items:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+        user = items[0]
+        if not verify_password(req.password, user['password_hash']):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+        token = create_access_token({"email": req.email})
+        return AuthResponse(access_token=token, email=req.email)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Login error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error during login")
 
 @app.get("/api/auth/meta/login")
 def meta_login():
@@ -256,7 +376,7 @@ def meta_login():
 from fastapi.responses import RedirectResponse
 
 @app.get("/api/auth/meta/callback")
-def meta_callback(code: str):
+async def meta_callback(code: str, background_tasks: BackgroundTasks):
     """Handles OAuth callback and exchanges code for long-lived token"""
     if not code:
         raise HTTPException(status_code=400, detail="Code not provided")
@@ -301,21 +421,22 @@ def meta_callback(code: str):
     user_info = requests.get("https://graph.facebook.com/me", params={"access_token": long_token, "fields": "email"}).json()
     user_email = user_info.get("email", "N/A")
 
+    saved_count = 0
     for acc in accounts:
-        integrations_db.save_integration(
+        success = integrations_db.save_integration(
             platform="meta",
             account_id=acc["account_id"],
             account_name=acc.get("name", f"Meta Account {acc['account_id']}"),
             email=user_email,
             access_token=encrypt_token(long_token)
         )
+        if success:
+            saved_count += 1
 
-
-    # 5. Immediate sync for the new accounts
-    try:
-        fetch_and_store_all()
-    except Exception as e:
-        print(f"Post-login sync failed: {e}")
+    # 5. Immediate sync for the new accounts in background
+    if saved_count > 0:
+        background_tasks.add_task(fetch_and_store_all)
+        print(f"META OAUTH: Added background sync task for {saved_count} accounts")
 
     # Redirect back to the frontend
     return RedirectResponse(url=f"{FRONTEND_URL}/integrations?success=true&platform=meta")
@@ -342,9 +463,8 @@ def google_login():
     return {"url": url}
 
 @app.get("/api/auth/google/callback")
-def google_callback(code: str, background_tasks: BackgroundTasks):
+async def google_callback(code: str, background_tasks: BackgroundTasks):
     """Handles Google OAuth callback and exchanges code for tokens"""
-    ensure_db()
     if not code:
         raise HTTPException(status_code=400, detail="Code not provided")
 

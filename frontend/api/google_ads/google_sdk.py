@@ -20,6 +20,16 @@ from Database.database import DynamoDB
 metrics_db = DynamoDB(table_name="GoogleAdsInsights")
 integrations_db = DynamoDB(table_name="Integrations")
 
+async def init_db():
+    print("Initializing Google DB connections...")
+    await metrics_db.connect()
+    await integrations_db.connect()
+
+async def close_db():
+    print("Closing Google DB connections...")
+    await metrics_db.close()
+    await integrations_db.close()
+
 DEVELOPER_TOKEN = os.getenv("GOOGLE_DEVELOPER_TOKEN", "")
 CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
@@ -182,7 +192,14 @@ def fetch_for_customer(customer_id, refresh_token, days, login_customer_id=None)
         return formatted_data
 
     except Exception as e:
-        print(f"[{customer_id}] SDK Error fetching Google insights: {e}")
+        error_str = str(e)
+        if "DEVELOPER_TOKEN_NOT_APPROVED" in error_str:
+            print(f"[{customer_id}]GOOGLE ADS ERROR: Your Developer Token is only approved for TEST ACCOUNTS.")
+            print(f"[{customer_id}]Solution: Use a Google Ads Test Manager account or apply for 'Basic Access' in the Google Ads API Center.")
+        elif "PERMISSION_DENIED" in error_str:
+            print(f"[{customer_id}]GOOGLE ADS ERROR: Permission Denied. Ensure the authenticated user has access to account {customer_id}.")
+        else:
+            print(f"[{customer_id}]SDK Error fetching Google insights: {e}")
         return []
 
 def write_to_dynamodb(data, days):
@@ -261,7 +278,7 @@ def fetch_and_store(days: int = 7):
             else:
                 print(f"GOOGLE SYNC: No performance data found for CID {target_cid} in the last {days} days.")
             
-    print(f"✅ GOOGLE SYNC COMPLETE: Total {len(all_results)} campaigns synced for {days} days.")
+    print(f"GOOGLE SYNC COMPLETE: Total {len(all_results)} campaigns synced for {days} days.")
     return all_results
 
 import concurrent.futures
@@ -270,7 +287,7 @@ def fetch_and_store_all():
     """
     Syncs data for all 3 dashboard time ranges: 7, 30, and 180 days.
     """
-    print("🚀 Starting Google multi-range sync...")
+    print("Starting Google multi-range sync...")
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         days_list = [7, 30, 180]
@@ -280,18 +297,17 @@ def fetch_and_store_all():
             days = future_to_days[future]
             try:
                 future.result()
-                print(f"✅ Google Sync for {days} days completed.")
+                print(f"Google Sync for {days} days completed.")
             except Exception as e:
-                print(f"❌ Error fetching Google for range {days}: {e}")
+                print(f"Error fetching Google for range {days}: {e}")
                 
-    print("✅ Full Google multi-range sync completed.")
+    print("Full Google multi-range sync completed.")
 
-def get_cached_insights(days: int = 7):
+async def async_get_cached_insights(days: int = 7):
     """
-    Returns data from DynamoDB.
-    Ensures 'platform' field is present for frontend filtering.
+    Asynchronously returns data from DynamoDB.
     """
-    data = metrics_db.read_campaign_metrics(days)
+    data = await metrics_db.async_read_campaign_metrics(days)
     for row in data:
         if 'platform' not in row:
             row['platform'] = 'google'

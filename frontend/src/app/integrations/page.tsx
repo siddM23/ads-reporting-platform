@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import { Plus, X, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import Image from "next/image";
 import { cn } from "@/lib/utils";
+import { authFetch } from "@/lib/auth-context";
 
 interface PlatformCardProps {
     title: string;
@@ -12,6 +13,7 @@ interface PlatformCardProps {
     accounts: { email: string; status: "Active" | "Inactive"; account_id: string; account_name: string }[];
     accentColor: string;
     onConnect: () => void;
+    onDelete: (accountId: string) => void;
 }
 
 const PlatformCard: React.FC<PlatformCardProps> = ({
@@ -20,7 +22,8 @@ const PlatformCard: React.FC<PlatformCardProps> = ({
     icon,
     accounts,
     accentColor,
-    onConnect
+    onConnect,
+    onDelete
 }) => {
     return (
         <div className="bg-white rounded-3xl border border-slate-200 shadow-xl shadow-slate-200/50 overflow-hidden flex flex-col min-h-[450px] transition-all duration-300 hover:shadow-indigo-100/50 hover:-translate-y-1">
@@ -51,7 +54,10 @@ const PlatformCard: React.FC<PlatformCardProps> = ({
                                         {acc.status}
                                     </div>
                                 </div>
-                                <button className="text-slate-300 hover:text-red-500 hover:bg-red-50 p-2 rounded-xl transition-all">
+                                <button
+                                    onClick={() => onDelete(acc.account_id)}
+                                    className="text-slate-300 hover:text-red-500 hover:bg-red-50 p-2 rounded-xl transition-all"
+                                >
                                     <X size={18} />
                                 </button>
                             </div>
@@ -91,7 +97,7 @@ export default function IntegrationsPage() {
 
     const fetchIntegrations = async () => {
         try {
-            const res = await fetch(`${API_URL}/integrations`);
+            const res = await authFetch(`${API_URL}/integrations`);
             if (!res.ok) {
                 console.error(`API Error: ${res.status} ${res.statusText}`);
                 return;
@@ -113,7 +119,7 @@ export default function IntegrationsPage() {
 
     const handleConnectMeta = async () => {
         try {
-            const res = await fetch(`${API_URL}/auth/meta/login`);
+            const res = await authFetch(`${API_URL}/auth/meta/login`);
             const data = await res.json();
             if (data.url) {
                 window.location.href = data.url;
@@ -125,13 +131,34 @@ export default function IntegrationsPage() {
 
     const handleConnectGoogle = async () => {
         try {
-            const res = await fetch(`${API_URL}/auth/google/login`);
+            const res = await authFetch(`${API_URL}/auth/google/login`);
             const data = await res.json();
             if (data.url) {
                 window.location.href = data.url;
             }
         } catch (err) {
             alert("Failed to start Google OAuth flow");
+        }
+    };
+
+    const handleDelete = async (platform: string, accountId: string) => {
+        // if (!confirm("Are you sure you want to disconnect this account?")) return;
+
+        try {
+            const res = await authFetch(`${API_URL}/integrations/${platform}/${accountId}`, {
+                method: "DELETE",
+            });
+
+            if (!res.ok) {
+                const data = await res.json();
+                throw new Error(data.detail || "Failed to delete integration");
+            }
+
+            // Refresh list
+            fetchIntegrations();
+        } catch (err) {
+            console.error(err);
+            alert("Error deleting integration");
         }
     };
 
@@ -177,7 +204,7 @@ export default function IntegrationsPage() {
 
             <div className="mb-8">
                 <h2 className="text-2xl font-bold text-slate-900 mb-2">Platform Settings</h2>
-                <p className="text-slate-500">Manage your ad platform integrations and API connections</p>
+                <p className="text-slate-500">Manage your ad platform integrations</p>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -186,6 +213,7 @@ export default function IntegrationsPage() {
                         key={platform.id}
                         {...platform}
                         accounts={filterAccounts(platform.id)}
+                        onDelete={(accountId) => handleDelete(platform.id, accountId)}
                     />
                 ))}
             </div>

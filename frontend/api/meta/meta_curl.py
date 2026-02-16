@@ -20,6 +20,16 @@ from Database.database import DynamoDB
 metrics_db = DynamoDB(table_name="MetaAdsInsights")
 integrations_db = DynamoDB(table_name="Integrations")
 
+async def init_db():
+    print("Initializing Meta DB connections...")
+    await metrics_db.connect()
+    await integrations_db.connect()
+
+async def close_db():
+    print("Closing Meta DB connections...")
+    await metrics_db.close()
+    await integrations_db.close()
+
 def fetch_for_account(account_id, token, days):
     """
     Fetches campaign-level insights for a single Meta Ad Account.
@@ -158,12 +168,11 @@ def fetch_and_store_all():
                 
     print("✅ Full multi-range sync completed.")
 
-def get_cached_insights(days: int = 7):
+async def async_get_cached_insights(days: int = 7):
     """
-    Returns data from DynamoDB without hitting Meta API.
-    Ensures 'platform' field is present for frontend filtering.
+    Asynchronously returns data from DynamoDB without hitting Meta API.
     """
-    data = metrics_db.read_campaign_metrics(days)
+    data = await metrics_db.async_read_campaign_metrics(days)
     for row in data:
         if 'platform' not in row:
             row['platform'] = 'meta'
