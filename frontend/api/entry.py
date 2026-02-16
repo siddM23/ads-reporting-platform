@@ -1,5 +1,11 @@
 import os
 import sys
+import bcrypt
+
+# This trick fools passlib into thinking bcrypt hasn't changed
+if not hasattr(bcrypt, "__about__"):
+    bcrypt.__about__ = type('about', (object,), {'__version__': bcrypt.__version__})
+
 import asyncio # Added for asyncio.gather
 
 # Ensure the current directory is in the path for finding siblings like 'meta', 'google', 'Database'

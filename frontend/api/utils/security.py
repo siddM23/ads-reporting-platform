@@ -12,6 +12,11 @@ JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 JWT_ALGORITHM = "HS256"
 
 import jwt
+import bcrypt
+# This trick fools passlib into thinking bcrypt hasn't changed
+if not hasattr(bcrypt, "__about__"):
+    bcrypt.__about__ = type('about', (object,), {'__version__': bcrypt.__version__})
+
 from datetime import datetime, timedelta
 from passlib.context import CryptContext
 
