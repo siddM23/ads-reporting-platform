@@ -13,20 +13,25 @@ JWT_ALGORITHM = "HS256"
 
 import jwt
 import bcrypt
-# This trick fools passlib into thinking bcrypt hasn't changed
-if not hasattr(bcrypt, "__about__"):
-    bcrypt.__about__ = type('about', (object,), {'__version__': bcrypt.__version__})
-
 from datetime import datetime, timedelta
-from passlib.context import CryptContext
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def verify_password(plain_password: str, hashed_password: str):
+    """Verifies a plain text password against its hash using direct bcrypt."""
+    try:
+        # bcrypt.checkpw expects bytes
+        return bcrypt.checkpw(
+            password=plain_password.encode('utf-8'),
+            hashed_password=hashed_password.encode('utf-8')
+        )
+    except Exception as e:
+        print(f"Error during password verification: {e}")
+        return False
 
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password):
-    return pwd_context.hash(password)
+def get_password_hash(password: str):
+    """Generates a salt and hashes a password using direct bcrypt."""
+    # salt = bcrypt.gensalt() expects bytes, hashpw returns bytes
+    hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+    return hashed.decode('utf-8')
 
 def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode = data.copy()
