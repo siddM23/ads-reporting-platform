@@ -220,8 +220,8 @@ def fetch_for_customer(customer_id, refresh_token, days=7, login_customer_id=Non
                 "platform": "google",
                 # Mimic Meta structure for frontend compatibility
                 "website_purchase_roas": [{"value": str(roas)}],
-                "action_values": [{"action_type": "offsite_conversion.fb_pixel_purchase", "value": str(conv_value)}],
-                "actions": [{"action_type": "offsite_conversion.fb_pixel_purchase", "value": str(conversions)}]
+                "action_values": [{"action_type": "conversions_value", "value": str(conv_value)}],
+                "actions": [{"action_type": "conversions", "value": str(conversions)}]
             })
             
         print(f"[{customer_id}] Successfully fetched {len(formatted_data)} campaign rows via SDK.")
