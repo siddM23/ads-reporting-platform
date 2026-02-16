@@ -54,6 +54,26 @@ def get_google_client(refresh_token, login_customer_id=None):
     
     return GoogleAdsClient.load_from_dict(credentials)
 
+def get_account_name(customer_id, refresh_token):
+    """
+    Fetches the descriptive name of a Google Ads account.
+    """
+    try:
+        client = get_google_client(refresh_token, login_customer_id=customer_id)
+        ga_service = client.get_service("GoogleAdsService")
+        query = "SELECT customer.descriptive_name FROM customer LIMIT 1"
+        
+        search_request = client.get_type("SearchGoogleAdsRequest")
+        search_request.customer_id = str(customer_id)
+        search_request.query = query
+        
+        response = ga_service.search(request=search_request)
+        for row in response:
+            return row.customer.descriptive_name
+    except Exception as e:
+        print(f"Error fetching name for {customer_id}: {e}")
+        return None
+    return None
 
 def discover_accounts(refresh_token, email=None):
     """
@@ -75,10 +95,14 @@ def discover_accounts(refresh_token, email=None):
         print(f"GOOGLE DISCOVERY: Found {len(base_ids)} base accounts: {base_ids}")
         
         # Dictionary to store ID -> Name mapping
-        # Initialize with base IDs (using generic name until resolved)
-        found_accounts = {bid: f"Google Account ({bid})" for bid in base_ids}
+        found_accounts = {}
+        
+        # 1. Get names for base accounts
+        for bid in base_ids:
+            name = get_account_name(bid, refresh_token) or f"Google Account ({bid})"
+            found_accounts[bid] = name
 
-        # Now, for each base account, check if it's a manager and find its sub-accounts
+        # 2. Check for sub-accounts (if base is manager)
         for base_id in base_ids:
             sub_accounts = find_sub_accounts_sdk(base_id, refresh_token)
             for sub in sub_accounts:
@@ -210,7 +234,7 @@ def fetch_for_customer(customer_id, refresh_token, days=7, login_customer_id=Non
             print(f"[{customer_id}]Solution: Use a Google Ads Test Manager account or apply for 'Basic Access' in the Google Ads API Center.")
         elif "PERMISSION_DENIED" in error_str:
             print(f"[{customer_id}]GOOGLE ADS ERROR: Permission Denied. Ensure the authenticated user has access to account {customer_id}.")
-        elif "REQUESTED_METRICS_FOR_MANAGER" in error_str:
+        elif "REQUESTED_METRICS_FOR_MANAGER" in error_str or "Metrics cannot be requested for a manager account" in error_str:
             print(f"[{customer_id}] GOOGLE ADS INFO: Account {customer_id} is a Manager Account. Fetching sub-accounts...")
             try:
                 # Use the current customer_id as the manager (login_customer_id) for discovery
@@ -317,17 +341,21 @@ def fetch_and_store(days: int = 7):
                 write_to_dynamodb(account_data, days)
                 all_results.extend(account_data)
                 
-                # Update integration name if we got a real name from the API and it differs (or is new)
+                # Check if we need to update the account name (if it's generic)
+                # We do NOT use account_data[0] name because it might be a sub-account of a manager
                 try:
-                    first_row_name = account_data[0].get('account_name')
-                    if first_row_name:
-                         integrations_db.save_integration(
-                            platform="google",
-                            account_id=target_cid,
-                            account_name=first_row_name,
-                            email=email,
-                            access_token=token
-                         )
+                    current_name = account.get('account_name', '')
+                    if not current_name or f"({target_cid})" in current_name:
+                        print(f"GOOGLE SYNC: Updating generic name for {target_cid}...")
+                        real_name = get_account_name(target_cid, raw_token)
+                        if real_name:
+                             integrations_db.save_integration(
+                                platform="google",
+                                account_id=target_cid,
+                                account_name=real_name,
+                                email=email,
+                                access_token=token
+                             )
                 except Exception as update_e:
                     print(f"GOOGLE SYNC warning: could not update account name: {update_e}")
 
