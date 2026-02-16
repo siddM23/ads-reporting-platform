@@ -70,17 +70,24 @@ def discover_accounts(refresh_token, email=None):
         print(f"GOOGLE DISCOVERY: Listing accessible customers using SDK...")
         accessible_customers = customer_service.list_accessible_customers()
         resource_names = accessible_customers.resource_names
-        customer_ids = [rn.split("/")[-1] for rn in resource_names]
+        base_ids = [rn.split("/")[-1] for rn in resource_names]
         
-        print(f"GOOGLE DISCOVERY: Found {len(customer_ids)} base accounts: {customer_ids}")
+        print(f"GOOGLE DISCOVERY: Found {len(base_ids)} base accounts: {base_ids}")
         
+        # Dictionary to store ID -> Name mapping
+        # Initialize with base IDs (using generic name until resolved)
+        found_accounts = {bid: f"Google Account ({bid})" for bid in base_ids}
+
         # Now, for each base account, check if it's a manager and find its sub-accounts
-        all_discovered_ids = set(customer_ids)
-        for base_id in customer_ids:
-            sub_ids = find_sub_accounts_sdk(base_id, refresh_token)
-            all_discovered_ids.update(sub_ids)
+        for base_id in base_ids:
+            sub_accounts = find_sub_accounts_sdk(base_id, refresh_token)
+            for sub in sub_accounts:
+                # Add or update with the actual name found
+                found_accounts[sub['id']] = sub['name']
         
-        result = list(all_discovered_ids)
+        # Return list of {id, name}
+        result = [{'id': k, 'name': v} for k, v in found_accounts.items()]
+        
         if email:
             _discovery_cache[email] = result
         return result
@@ -107,22 +114,23 @@ def find_sub_accounts_sdk(manager_id, refresh_token):
         
         response = ga_service.search(request=search_request)
         
-        client_ids = []
+        client_accounts = []
         for row in response:
             client_client = row.customer_client
             # Only get actual client accounts, not sub-managers
             if not client_client.manager:
                 cid = client_client.client_customer.split("/")[-1]
-                client_ids.append(cid)
+                name = client_client.descriptive_name or f"Google Account ({cid})"
+                client_accounts.append({'id': cid, 'name': name})
                 
-        print(f"GOOGLE DISCOVERY: Found {len(client_ids)} clients under manager {manager_id}")
-        return client_ids
+        print(f"GOOGLE DISCOVERY: Found {len(client_accounts)} clients under manager {manager_id}")
+        return client_accounts
     except Exception as e:
         # Some accounts might not be managers, ignore errors
         print(f"GOOGLE SUB-ACCOUNT DISCOVERY: {manager_id} skip or error: {e}")
         return []
 
-def fetch_for_customer(customer_id, refresh_token, days, login_customer_id=None):
+def fetch_for_customer(customer_id, refresh_token, days=7, login_customer_id=None, start_date=None, end_date=None):
     """
     Fetches campaign-level insights for a single Google Ads Account using official SDK.
     """
@@ -132,10 +140,14 @@ def fetch_for_customer(customer_id, refresh_token, days, login_customer_id=None)
 
     try:
         # 1. Time Range Calculation
-        start_date = (datetime.date.today() - datetime.timedelta(days=days)).strftime('%Y-%m-%d')
-        end_date = (datetime.date.today() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
-        
-        print(f"[{customer_id}] Fetching Google insights (SDK) for last {days} days ({start_date} to {end_date})...")
+        if start_date and end_date:
+             # Use provided custom range
+             print(f"[{customer_id}] Fetching Google insights (SDK) for custom range: {start_date} to {end_date}...")
+        else:
+             # Default to last 'days'
+             start_date = (datetime.date.today() - datetime.timedelta(days=days)).strftime('%Y-%m-%d')
+             end_date = (datetime.date.today() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+             print(f"[{customer_id}] Fetching Google insights (SDK) for last {days} days ({start_date} to {end_date})...")
 
         # 2. Initialize Client
         # If we have a login_customer_id (manager ID), use it; otherwise fallback to customer_id itself
@@ -198,6 +210,30 @@ def fetch_for_customer(customer_id, refresh_token, days, login_customer_id=None)
             print(f"[{customer_id}]Solution: Use a Google Ads Test Manager account or apply for 'Basic Access' in the Google Ads API Center.")
         elif "PERMISSION_DENIED" in error_str:
             print(f"[{customer_id}]GOOGLE ADS ERROR: Permission Denied. Ensure the authenticated user has access to account {customer_id}.")
+        elif "REQUESTED_METRICS_FOR_MANAGER" in error_str:
+            print(f"[{customer_id}] GOOGLE ADS INFO: Account {customer_id} is a Manager Account. Fetching sub-accounts...")
+            try:
+                # Use the current customer_id as the manager (login_customer_id) for discovery
+                sub_accounts_list = find_sub_accounts_sdk(customer_id, refresh_token)
+                all_sub_data = []
+                for sub_acc in sub_accounts_list:
+                    sub_id = sub_acc['id']
+                    print(f"[{customer_id}] -> Fetching sub-account {sub_id} ({sub_acc['name']})...")
+                    # Recursively fetch for the sub-account, ensuring we use the manager's credentials context
+                    sub_data = fetch_for_customer(
+                        sub_id, 
+                        refresh_token, 
+                        days=days, 
+                        login_customer_id=customer_id, 
+                        start_date=start_date, 
+                        end_date=end_date
+                    )
+                    if sub_data:
+                        all_sub_data.extend(sub_data)
+                return all_sub_data
+            except Exception as sub_e:
+                print(f"[{customer_id}] Error handling sub-accounts for manager: {sub_e}")
+                return []
         else:
             print(f"[{customer_id}]SDK Error fetching Google insights: {e}")
         return []
@@ -246,11 +282,13 @@ def fetch_and_store(days: int = 7):
             
             if customer_ids:
                 print(f"GOOGLE SYNC: Found {len(customer_ids)} IDs for {cid}. Updating integration records...")
-                for real_cid in customer_ids:
+                for acc_obj in customer_ids:
+                    real_cid = acc_obj['id']
+                    real_name = acc_obj['name']
                     integrations_db.save_integration(
                         platform="google",
                         account_id=real_cid,
-                        account_name=f"Google Account ({real_cid})",
+                        account_name=real_name,
                         email=email,
                         access_token=token
                     )
@@ -258,9 +296,12 @@ def fetch_and_store(days: int = 7):
                 print(f"GOOGLE SYNC: No Google Ads accounts found associated with email {cid}. Stopping sync for this account.")
                 customer_ids = []
         else:
-            customer_ids = [cid]
+            # Wrap standard CID in the expected structure for loop
+            customer_ids = [{'id': cid, 'name': f"Google Account ({cid})"}]
 
-        for target_cid in customer_ids:
+        for target_obj in customer_ids:
+            target_cid = target_obj['id']
+            
             if "@" in str(target_cid):
                 print(f"GOOGLE SYNC: Skipping API call for non-numeric CID: {target_cid}")
                 continue
@@ -275,10 +316,74 @@ def fetch_and_store(days: int = 7):
                 print(f"GOOGLE SYNC: Found {len(account_data)} campaigns for CID {target_cid}. Writing to DB...")
                 write_to_dynamodb(account_data, days)
                 all_results.extend(account_data)
+                
+                # Update integration name if we got a real name from the API and it differs (or is new)
+                try:
+                    first_row_name = account_data[0].get('account_name')
+                    if first_row_name:
+                         integrations_db.save_integration(
+                            platform="google",
+                            account_id=target_cid,
+                            account_name=first_row_name,
+                            email=email,
+                            access_token=token
+                         )
+                except Exception as update_e:
+                    print(f"GOOGLE SYNC warning: could not update account name: {update_e}")
+
             else:
                 print(f"GOOGLE SYNC: No performance data found for CID {target_cid} in the last {days} days.")
             
     print(f"GOOGLE SYNC COMPLETE: Total {len(all_results)} campaigns synced for {days} days.")
+    print(f"GOOGLE SYNC COMPLETE: Total {len(all_results)} campaigns synced for {days} days.")
+    return all_results
+
+def fetch_custom_range(start_date, end_date):
+    """
+    Fetches data for all connected Google accounts for a custom date range.
+    """
+    integrations = integrations_db.list_integrations(platform="google")
+    
+    if not integrations:
+        return []
+
+    print(f"GOOGLE CUSTOM FETCH: Starting fetch for {len(integrations)} integrations (Range: {start_date} to {end_date})")
+    
+    all_results = []
+    
+    for account in integrations:
+        email = account.get('email')
+        token = account.get('access_token')
+        cid = account.get('account_id')
+        
+        if not email or not token or not cid:
+            continue
+            
+        raw_token = decrypt_token(token)
+        
+        # Discovery handling (simplified for custom fetch - assume CIDs are resolved or we skip complex discovery for speed)
+        # However, we must handle email-based CIDs if they exist in DB
+        customer_ids = [cid]
+        if "@" in str(cid):
+             # Try to discover on the fly or just skip to avoid blocking ui? 
+             # Better to skip email-cids in custom fetch if they weren't resolved by sync
+             continue
+             
+        for target_cid in customer_ids:
+            if "@" in str(target_cid): continue
+
+            # Fetch
+            account_data = fetch_for_customer(
+                target_cid, 
+                raw_token, 
+                days=0, 
+                start_date=start_date, 
+                end_date=end_date
+            )
+            
+            if account_data:
+                all_results.extend(account_data)
+
     return all_results
 
 import concurrent.futures

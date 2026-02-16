@@ -30,7 +30,7 @@ async def close_db():
     await metrics_db.close()
     await integrations_db.close()
 
-def fetch_for_account(account_id, token, days):
+def fetch_for_account(account_id, token, days=7, start_date=None, end_date=None):
     """
     Fetches campaign-level insights for a single Meta Ad Account.
     """
@@ -41,10 +41,15 @@ def fetch_for_account(account_id, token, days):
             clean_id = f"act_{clean_id}"
 
         # 2. Time Range Calculation
-        # Meta expects JSON object { 'since': 'YYYY-MM-DD', 'until': 'YYYY-MM-DD' }
-        start_date = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
-        end_date = datetime.date.today().isoformat()
-        time_range = {"since": start_date, "until": end_date}
+        if start_date and end_date:
+            time_range = {"since": start_date, "until": end_date}
+            print(f"[{account_id}] Fetching Meta insights for custom range: {start_date} to {end_date}...")
+        else:
+            # Default to last 'days'
+            s_date = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+            e_date = datetime.date.today().isoformat()
+            time_range = {"since": s_date, "until": e_date}
+            print(f"[{account_id}] Fetching Meta insights for last {days} days (from {s_date})...")
 
         print(f"[{account_id}] Fetching Meta insights for last {days} days (from {start_date})...")
 
@@ -142,6 +147,49 @@ def fetch_and_store(days: int = 7):
             all_results.extend(account_data)
             
     print(f"✅ Synced {len(all_results)} campaigns for {days} days")
+    print(f"✅ Synced {len(all_results)} campaigns for {days} days")
+    return all_results
+
+def fetch_custom_range(start_date, end_date):
+    """
+    Fetches data for all connected Meta accounts for a custom date range.
+    Does NOT store in DynamoDB, just returns the data.
+    """
+    integrations = integrations_db.list_integrations(platform="meta")
+    
+    if not integrations:
+        return []
+
+    print(f"Fetching Meta custom range: {start_date} to {end_date}...")
+    
+    all_results = []
+    
+    for account in integrations:
+        account_id = account.get('account_id')
+        token = account.get('access_token')
+        
+        if not account_id or not token:
+            continue
+            
+        # Fetch from Meta API
+        account_data = fetch_for_account(
+            account_id, 
+            decrypt_token(token), 
+            days=0, # Ignored when start/end provided
+            start_date=start_date, 
+            end_date=end_date
+        )
+
+        # Get account name (simplified for speed, or could cache)
+        acc_name = account.get('account_name', f"Account {account_id}")
+
+        # Add account name and platform to each row
+        for row in account_data:
+            row['account_name'] = acc_name
+            row['platform'] = 'meta'
+        
+        all_results.extend(account_data)
+            
     return all_results
 
 import concurrent.futures

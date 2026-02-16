@@ -13,6 +13,10 @@ import google_ads.google_sdk as google_module
 from Database.database import DynamoDB
 from dotenv import load_dotenv
 
+# Import custom fetchers, for actions on dash 
+from meta.meta_curl import fetch_custom_range as fetch_meta_custom
+from google_ads.google_sdk import fetch_custom_range as fetch_google_custom
+
 # Load environment variables (Local only)
 ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'global.env')
 if os.path.exists(ENV_PATH):
@@ -172,7 +176,13 @@ class UserAuthRequest(BaseModel):
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    token_type: str = "bearer"
     email: str
+    preferences: Optional[dict] = None
+
+class UserPreferences(BaseModel):
+    custom_range: Optional[dict] = None
+    selected_label: Optional[str] = None
 
 # New async wrappers for insights
 async def get_meta_insights(days: int = 7):
@@ -218,6 +228,29 @@ async def get_all_insights(user: dict = Depends(get_current_user)):
         "30": meta_30 + google_30,
         "180": meta_180 + google_180
     }
+
+@app.get("/api/insights/custom")
+async def get_custom_insights(
+    start_date: str = Query(..., description="YYYY-MM-DD"), 
+    end_date: str = Query(..., description="YYYY-MM-DD"),
+    user: dict = Depends(get_current_user)
+):
+    """
+    Returns insights for a specific custom date range. 
+    Fetches LIVE from APIs (does not use cache).
+    """
+    import concurrent.futures
+    
+    # Run both fetches in parallel
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        meta_future = loop.run_in_executor(pool, fetch_meta_custom, start_date, end_date)
+        google_future = loop.run_in_executor(pool, fetch_google_custom, start_date, end_date)
+        
+        meta_data = await meta_future
+        google_data = await google_future
+        
+    return meta_data + google_data
 
 @app.get("/api/insights/sync-status")
 async def get_sync_status():
@@ -352,13 +385,49 @@ async def login(req: UserAuthRequest):
             raise HTTPException(status_code=401, detail="Invalid email or password")
         
         token = create_access_token({"email": req.email})
-        return AuthResponse(access_token=token, email=req.email)
+        # Return user preferences if they exist
+        preferences = user.get('preferences', {})
+        return AuthResponse(access_token=token, email=req.email, preferences=preferences)
     except HTTPException:
         raise
     except Exception as e:
         print(f"Login error: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error during login")
+@app.post("/api/user/preferences")
+async def update_preferences(prefs: UserPreferences, user: dict = Depends(get_current_user)):
+    """
+    Updates the user's preferences (custom date ranges, selected labels).
+    """
+    try:
+        user_email = user.get("email")
+        if not user_email:
+            raise HTTPException(status_code=400, detail="User email not found")
 
+        # Read user first
+        from boto3.dynamodb.conditions import Key
+        response = await users_db.async_query(KeyConditionExpression=Key('email').eq(user_email))
+        items = response.get('Items', [])
+        
+        if not items:
+             raise HTTPException(status_code=404, detail="User not found")
+        
+        current_user = items[0]
+        current_prefs = current_user.get('preferences', {}) or {}
+        
+        if prefs.custom_range:
+            current_prefs['custom_range'] = prefs.custom_range
+        if prefs.selected_label:
+            current_prefs['selected_label'] = prefs.selected_label
+            
+        current_user['preferences'] = current_prefs
+        
+        # Save back the full item
+        await users_db.async_put_item(Item=current_user)
+        
+        return {"message": "Preferences updated", "preferences": current_prefs}
+    except Exception as e:
+        print(f"Update preferences error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 @app.get("/api/auth/meta/login")
 def meta_login():
     """Redirects to Facebook OAuth Dialog"""
@@ -499,18 +568,20 @@ async def google_callback(code: str, background_tasks: BackgroundTasks):
     # We discover real Google Ads Customer IDs to match Meta's account-based strategy
     # The discovery function now uses the official SDK which expects a token for initialization (preferably refresh_token)
     token_for_discovery = refresh_token or access_token
-    customer_ids = discover_accounts(token_for_discovery, email=user_email)
+    customer_accounts = discover_accounts(token_for_discovery, email=user_email)
     
-    if not customer_ids:
+    if not customer_accounts:
         print(f"GOOGLE OAUTH: No customer IDs discovered, saving {user_email} as fallback.")
-        customer_ids = [user_email]
+        customer_accounts = [{'id': user_email, 'name': f"Google Account ({user_email})"}]
 
     saved_count = 0
-    for cid in customer_ids:
+    for account in customer_accounts:
+        cid = account['id']
+        name = account['name']
         success = integrations_db.save_integration(
             platform="google",
             account_id=cid,
-            account_name=f"Google Account ({cid})",
+            account_name=name,
             email=user_email,
             access_token=encrypt_token(refresh_token or access_token)
         )

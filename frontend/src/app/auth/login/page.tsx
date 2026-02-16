@@ -36,7 +36,7 @@ export default function LoginPage() {
                 throw new Error(data.detail || 'Authentication failed');
             }
 
-            login(data.access_token, data.email);
+            login(data.access_token, data.email, data.preferences);
         } catch (err: any) {
             setError(err.message);
         } finally {

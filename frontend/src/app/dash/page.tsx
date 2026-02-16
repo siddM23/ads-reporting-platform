@@ -4,7 +4,10 @@ import React, { useState, useEffect, useMemo } from "react";
 import { ChevronDown, ChevronRight, AlertCircle, RefreshCcw, Clock } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
-import { authFetch } from "@/lib/auth-context";
+import { authFetch, useAuth } from "@/lib/auth-context";
+import { DateFilter } from "@/components/ui/date-filter";
+
+import { format } from "date-fns";
 
 interface MetricRowProps {
     label: string;
@@ -13,10 +16,12 @@ interface MetricRowProps {
     onToggle?: () => void;
     level?: number;
     metrics: {
-        last7: { spend: string; roas: string; rev: string; res: string; cac: string };
-        prevMonth: { spend: string; roas: string; rev: string; res: string; cac: string };
-        sixMonth: { res: string; roas: string; cac: string };
+        last7?: { spend: string; roas: string; rev: string; res: string; cac: string };
+        prevMonth?: { spend: string; roas: string; rev: string; res: string; cac: string };
+        sixMonth?: { spend: string; roas: string; rev: string; res: string; cac: string };
+        custom?: { spend: string; roas: string; rev: string; res: string; cac: string };
     };
+    selectedRange?: string;
 }
 
 const MetricRow: React.FC<MetricRowProps> = ({
@@ -25,9 +30,52 @@ const MetricRow: React.FC<MetricRowProps> = ({
     isExpanded = false,
     onToggle,
     level = 0,
-    metrics
+    metrics,
+    selectedRange = "All Ranges"
 }) => {
     const isCampaign = level > 0;
+    const showAll = selectedRange === "All Ranges";
+    const showLast7 = showAll || selectedRange === "Last 7 days";
+    const showPrevMonth = showAll || selectedRange === "Last 30 days";
+    const showSixMonth = showAll || selectedRange === "Last 6 months";
+    const showCustom = selectedRange === "Custom";
+
+    // Reusable cell renderer for consistent styling
+    const renderCell = (value: string, type: 'text' | 'roas' | 'cac' | 'currency' | 'number', isLight = false) => {
+        let content: React.ReactNode = value;
+        let className = "py-4 px-4 text-center text-sm font-medium text-slate-900";
+
+        if (type === 'roas') {
+            const numVal = parseFloat(value);
+            const isBad = !isNaN(numVal) && numVal < 1;
+            return (
+                <td className="py-4 px-4 text-center text-sm font-medium">
+                    <span className={cn(
+                        "px-2 py-1 rounded-lg text-[13px] font-bold",
+                        isBad ? "text-red-500 bg-red-50" : "text-slate-900"
+                    )}>
+                        {value}
+                    </span>
+                </td>
+            );
+        }
+
+        if (type === 'cac') {
+            return (
+                <td className="py-4 px-4 text-center text-sm font-medium border-r border-slate-100/50">
+                    <span className="px-2 py-1 rounded-lg text-[13px] font-bold text-slate-900">
+                        {value}
+                    </span>
+                </td>
+            );
+        }
+
+        if (isLight) {
+            className += " text-slate-400 font-light";
+        }
+
+        return <td className={className}>{content}</td>;
+    };
 
     return (
         <tr className={cn(
@@ -57,38 +105,49 @@ const MetricRow: React.FC<MetricRowProps> = ({
                 </div>
             </td>
 
+            {/* Custom Range */}
+            {showCustom && metrics.custom && (
+                <>
+                    {renderCell(metrics.custom.spend, 'currency')}
+                    {renderCell(metrics.custom.roas, 'roas')}
+                    {renderCell(metrics.custom.rev, 'currency')}
+                    {renderCell(metrics.custom.res, 'number', true)}
+                    {renderCell(metrics.custom.cac, 'cac')}
+                </>
+            )}
+
             {/* Last 7 Days */}
-            <td className="py-4 px-4 text-center text-sm font-medium text-slate-900">{metrics.last7.spend}</td>
-            <td className="py-4 px-4 text-center text-sm font-medium">
-                <span className={cn(
-                    "px-2 py-1 rounded-lg text-[13px] font-bold",
-                    parseFloat(metrics.last7.roas) < 1 ? "text-red-500 bg-red-50" : "text-slate-900"
-                )}>
-                    {metrics.last7.roas}
-                </span>
-            </td>
-            <td className="py-4 px-4 text-center text-sm font-medium text-slate-900">{metrics.last7.rev}</td>
-            <td className="py-4 px-4 text-center text-sm font-medium text-slate-400 font-light">{metrics.last7.res}</td>
-            <td className="py-4 px-4 text-center text-sm font-medium border-r border-slate-100/50">
-                <span className={cn(
-                    "px-2 py-1 rounded-lg text-[13px] font-bold",
-                    parseFloat(metrics.last7.cac.replace('$', '')) 
-                )}>
-                    {metrics.last7.cac}
-                </span>
-            </td>
+            {showLast7 && metrics.last7 && (
+                <>
+                    {renderCell(metrics.last7.spend, 'currency')}
+                    {renderCell(metrics.last7.roas, 'roas')}
+                    {renderCell(metrics.last7.rev, 'currency')}
+                    {renderCell(metrics.last7.res, 'number', true)}
+                    {renderCell(metrics.last7.cac, 'cac')}
+                </>
+            )}
 
             {/* Previous Month */}
-            <td className="py-4 px-4 text-center text-sm font-medium text-slate-600 bg-slate-50/20">{metrics.prevMonth.spend}</td>
-            <td className="py-4 px-4 text-center text-sm font-medium text-slate-600 bg-slate-50/20">{metrics.prevMonth.roas}</td>
-            <td className="py-4 px-4 text-center text-sm font-medium text-slate-600 bg-slate-50/20">{metrics.prevMonth.rev}</td>
-            <td className="py-4 px-4 text-center text-sm font-medium text-slate-400 bg-slate-50/20 font-light">{metrics.prevMonth.res}</td>
-            <td className="py-4 px-4 text-center text-sm font-medium text-slate-600 bg-slate-50/20 border-r border-slate-100/50">{metrics.prevMonth.cac}</td>
+            {showPrevMonth && metrics.prevMonth && (
+                <>
+                    {renderCell(metrics.prevMonth.spend, 'currency')}
+                    {renderCell(metrics.prevMonth.roas, 'roas')}
+                    {renderCell(metrics.prevMonth.rev, 'currency')}
+                    {renderCell(metrics.prevMonth.res, 'number', true)}
+                    {renderCell(metrics.prevMonth.cac, 'cac')}
+                </>
+            )}
 
             {/* 6 Months Avg */}
-            <td className="py-4 px-4 text-center text-sm font-medium text-slate-400 font-light">{metrics.sixMonth.res}</td>
-            <td className="py-4 px-4 text-center text-sm font-medium text-slate-600">{metrics.sixMonth.roas}</td>
-            <td className="py-4 px-4 text-center text-sm font-medium text-slate-600">{metrics.sixMonth.cac}</td>
+            {showSixMonth && metrics.sixMonth && (
+                <>
+                    {renderCell(metrics.sixMonth.spend, 'currency')}
+                    {renderCell(metrics.sixMonth.roas, 'roas')}
+                    {renderCell(metrics.sixMonth.rev, 'currency')}
+                    {renderCell(metrics.sixMonth.res, 'number', true)}
+                    {renderCell(metrics.sixMonth.cac, 'cac')}
+                </>
+            )}
         </tr>
     );
 };
@@ -96,23 +155,66 @@ const MetricRow: React.FC<MetricRowProps> = ({
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "/api";
 
 export default function DashPage() {
+    const { preferences, updatePreferences } = useAuth();
     const [activeTab, setActiveTab] = useState("Meta Ads");
     const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
     const [cooldownDisplay, setCooldownDisplay] = useState("");
     const [isSyncing, setIsSyncing] = useState(false);
 
+    // Initialize from preferences if available, else defaults
+    const [selectedRange, setSelectedRange] = useState<string>(preferences?.selected_label || "Last 7 days");
+    const [customStart, setCustomStart] = useState<string | undefined>(preferences?.custom_range?.start);
+    const [customEnd, setCustomEnd] = useState<string | undefined>(preferences?.custom_range?.end);
+
+    // Sync state when preferences load (e.g. after login)
+    useEffect(() => {
+        if (preferences) {
+            if (preferences.selected_label) setSelectedRange(preferences.selected_label);
+            if (preferences.custom_range) {
+                setCustomStart(preferences.custom_range.start);
+                setCustomEnd(preferences.custom_range.end);
+            }
+        }
+    }, [preferences]);
+
     const queryClient = useQueryClient();
 
     // Fetch Insights Data
     const { data: rawApiData, isLoading: isDataLoading, refetch: refetchData } = useQuery({
-        queryKey: ["insights"],
+        queryKey: ["insights", selectedRange, customStart, customEnd],
         queryFn: async () => {
-            const res = await authFetch(`${API_URL}/insights/all`);
-            if (!res.ok) throw new Error("Failed to fetch data");
-            return res.json();
+            if (selectedRange === "Custom" && customStart && customEnd) {
+                const res = await authFetch(`${API_URL}/insights/custom?start_date=${customStart}&end_date=${customEnd}`);
+                if (!res.ok) throw new Error("Failed to fetch custom data");
+                return res.json();
+            } else {
+                const res = await authFetch(`${API_URL}/insights/all`);
+                if (!res.ok) throw new Error("Failed to fetch data");
+                return res.json();
+            }
         },
         staleTime: 1000 * 60 * 5, // 5 minutes
     });
+
+    const handleRangeChange = (range: string, start?: Date, end?: Date) => {
+        setSelectedRange(range);
+
+        const newPrefs: any = { selected_label: range };
+
+        if (range === "Custom" && start && end) {
+            const s = format(start, "yyyy-MM-dd");
+            const e = format(end, "yyyy-MM-dd");
+            setCustomStart(s);
+            setCustomEnd(e);
+            newPrefs.custom_range = { start: s, end: e };
+        } else {
+            setCustomStart(undefined);
+            setCustomEnd(undefined);
+            if (range !== "Custom") newPrefs.custom_range = null;
+        }
+
+        updatePreferences(newPrefs);
+    };
 
     // Fetch Sync Status
     const { data: syncStatus, refetch: refetchSyncStatus } = useQuery({
@@ -131,142 +233,147 @@ export default function DashPage() {
 
     const platforms = ["Meta Ads", "Google Ads"];
 
-    // Transform API data from all ranges into the nested structure: Brand -> Campaigns
-    const processData = (allRanges: { "7": any[], "30": any[], "180": any[] }, platformFilter: string) => {
+    // Transform API data
+    const processData = (apiData: any, platformFilter: string) => {
         const brands: Record<string, any> = {};
         const targetPlatform = platformFilter.toLowerCase().includes("meta") ? "meta" : "google";
 
-        if (!allRanges) return [];
+        if (!apiData) return [];
 
-        // Helper to parse Meta's nested action lists
+        // Helper to parse Meta/Google nested action lists
         const getActionValue = (list: any[], actionType: string) => {
             if (!list) return 0;
             const item = list.find((x: any) => x.action_type === actionType);
             return item ? parseFloat(item.value) : 0;
         };
 
-        // Helper to extract metrics from a row
         const extractMetrics = (row: any) => {
             const spend = parseFloat(row.spend || "0");
-            const revenue = getActionValue(row.action_values, "purchase") || getActionValue(row.action_values, "omni_purchase");
-            const results = getActionValue(row.actions, "purchase") || getActionValue(row.actions, "omni_purchase");
+            const revenue = getActionValue(row.action_values, "purchase") || getActionValue(row.action_values, "omni_purchase") || getActionValue(row.action_values, "conversions_value") || 0;
+            const results = getActionValue(row.actions, "purchase") || getActionValue(row.actions, "omni_purchase") || getActionValue(row.actions, "conversions") || 0;
             const roas = spend > 0 ? (revenue / spend) : 0;
             const cac = results > 0 ? (spend / results) : 0;
             return { spend, revenue, results, roas, cac };
         };
 
-        // Build lookup maps for 30-day and 180-day data by campaign_id
-        const data30Map: Record<string, any> = {};
-        const data180Map: Record<string, any> = {};
-
-        (allRanges["30"] || []).forEach((row: any) => {
-            data30Map[row.campaign_id] = extractMetrics(row);
+        const formatMetrics = (m: any) => ({
+            spend: `$${m.spend.toFixed(2)}`,
+            roas: m.roas.toFixed(2),
+            rev: `$${m.revenue.toFixed(2)}`,
+            res: m.results.toFixed(0), // Removed toString to simple int format
+            cac: `$${m.cac.toFixed(2)}`
         });
 
-        (allRanges["180"] || []).forEach((row: any) => {
-            data180Map[row.campaign_id] = extractMetrics(row);
-        });
+        // Check if we have standard ranges or a custom list
+        const isCustom = Array.isArray(apiData);
 
-        // Process 7-day data as primary, then merge in 30/180 data
-        (allRanges["7"] || []).forEach((row: any) => {
-            if (row.platform !== targetPlatform) return;
-            const brandName = row.account_name || "Unknown Account";
-            const campaignId = row.campaign_id;
+        if (isCustom) {
+            // Process Custom Range Data (flat list)
+            apiData.forEach((row: any) => {
+                if (row.platform !== targetPlatform) return;
+                const brandName = row.account_name || "Unknown Account";
 
-            // Initialize Brand Entry if missing
-            if (!brands[brandName]) {
-                brands[brandName] = {
-                    brand: brandName,
+                if (!brands[brandName]) {
+                    brands[brandName] = {
+                        brand: brandName,
+                        metrics: { custom: { spend: 0, roas: 0, rev: 0, res: 0, cac: 0 } },
+                        campaigns: []
+                    };
+                }
+
+                const m = extractMetrics(row);
+
+                brands[brandName].campaigns.push({
+                    label: row.campaign_name,
+                    metrics: { custom: formatMetrics(m) }
+                });
+
+                // Aggregate
+                const agg = brands[brandName].metrics.custom;
+                agg.spend += m.spend;
+                agg.rev += m.revenue;
+                agg.res += m.results;
+            });
+
+            // Finalize Aggregates
+            Object.values(brands).forEach((brand: any) => {
+                const m = brand.metrics.custom;
+                m.roas = m.spend > 0 ? (m.rev / m.spend) : 0;
+                m.cac = m.res > 0 ? (m.spend / m.res) : 0;
+                brand.metrics.custom = formatMetrics({ spend: m.spend, revenue: m.rev, results: m.res, roas: m.roas, cac: m.cac });
+            });
+
+        } else {
+            // Process Standard Ranges (7, 30, 180)
+            // Build lookup maps
+            const data30Map: Record<string, any> = {};
+            const data180Map: Record<string, any> = {};
+            (apiData["30"] || []).forEach((row: any) => data30Map[row.campaign_id] = extractMetrics(row));
+            (apiData["180"] || []).forEach((row: any) => data180Map[row.campaign_id] = extractMetrics(row));
+
+            (apiData["7"] || []).forEach((row: any) => {
+                if (row.platform !== targetPlatform) return;
+                const brandName = row.account_name || "Unknown Account";
+
+                if (!brands[brandName]) {
+                    brands[brandName] = {
+                        brand: brandName,
+                        metrics: {
+                            last7: { spend: 0, roas: 0, rev: 0, res: 0, cac: 0 },
+                            prevMonth: { spend: 0, roas: 0, rev: 0, res: 0, cac: 0 },
+                            sixMonth: { spend: 0, roas: 0, rev: 0, res: 0, cac: 0 }
+                        },
+                        campaigns: []
+                    };
+                }
+
+                const m7 = extractMetrics(row);
+                const m30 = data30Map[row.campaign_id] || { spend: 0, revenue: 0, results: 0, roas: 0, cac: 0 };
+                const m180 = data180Map[row.campaign_id] || { spend: 0, revenue: 0, results: 0, roas: 0, cac: 0 };
+
+                brands[brandName].campaigns.push({
+                    label: row.campaign_name,
                     metrics: {
-                        last7: { spend: 0, roas: 0, rev: 0, res: 0, cac: 0 },
-                        prevMonth: { spend: 0, roas: 0, rev: 0, res: 0, cac: 0 },
-                        sixMonth: { res: 0, roas: 0, cac: 0 }
-                    },
-                    campaigns: []
-                };
-            }
-
-            // Extract 7-day metrics
-            const m7 = extractMetrics(row);
-
-            // Get 30-day and 180-day metrics for this campaign
-            const m30 = data30Map[campaignId] || { spend: 0, revenue: 0, results: 0, roas: 0, cac: 0 };
-            const m180 = data180Map[campaignId] || { spend: 0, revenue: 0, results: 0, roas: 0, cac: 0 };
-
-            // Add Campaign with all ranges
-            brands[brandName].campaigns.push({
-                label: row.campaign_name,
-                campaignId,
-                metrics: {
-                    last7: {
-                        spend: `$${m7.spend.toFixed(2)}`,
-                        roas: m7.roas.toFixed(2),
-                        rev: `$${m7.revenue.toFixed(2)}`,
-                        res: m7.results.toString(),
-                        cac: `$${m7.cac.toFixed(2)}`
-                    },
-                    prevMonth: {
-                        spend: `$${m30.spend.toFixed(2)}`,
-                        roas: m30.roas.toFixed(2),
-                        rev: `$${m30.revenue.toFixed(2)}`,
-                        res: m30.results.toString(),
-                        cac: `$${m30.cac.toFixed(2)}`
-                    },
-                    sixMonth: {
-                        res: m180.results.toString(),
-                        roas: m180.roas.toFixed(2),
-                        cac: `$${m180.cac.toFixed(2)}`
+                        last7: formatMetrics(m7),
+                        prevMonth: formatMetrics(m30),
+                        sixMonth: formatMetrics(m180)
                     }
-                }
+                });
+
+                // Aggregate
+                const agg = brands[brandName].metrics;
+
+                agg.last7.spend += m7.spend;
+                agg.last7.rev += m7.revenue;
+                agg.last7.res += m7.results;
+
+                agg.prevMonth.spend += m30.spend;
+                agg.prevMonth.rev += m30.revenue;
+                agg.prevMonth.res += m30.results;
+
+                agg.sixMonth.res += m180.results;
+                agg.sixMonth.spend += m180.spend;
+                agg.sixMonth.rev += m180.revenue;
             });
 
-            // Aggregate to Brand Level
-            brands[brandName].metrics.last7.spend += m7.spend;
-            brands[brandName].metrics.last7.rev += m7.revenue;
-            brands[brandName].metrics.last7.res += m7.results;
+            // Finalize Aggregates
+            Object.values(brands).forEach((brand: any) => {
+                const m7 = brand.metrics.last7;
+                m7.roas = m7.spend > 0 ? (m7.rev / m7.spend) : 0;
+                m7.cac = m7.res > 0 ? (m7.spend / m7.res) : 0;
+                brand.metrics.last7 = formatMetrics({ spend: m7.spend, revenue: m7.rev, results: m7.res, roas: m7.roas, cac: m7.cac });
 
-            brands[brandName].metrics.prevMonth.spend += m30.spend;
-            brands[brandName].metrics.prevMonth.rev += m30.revenue;
-            brands[brandName].metrics.prevMonth.res += m30.results;
+                const m30 = brand.metrics.prevMonth;
+                m30.roas = m30.spend > 0 ? (m30.rev / m30.spend) : 0;
+                m30.cac = m30.res > 0 ? (m30.spend / m30.res) : 0;
+                brand.metrics.prevMonth = formatMetrics({ spend: m30.spend, revenue: m30.rev, results: m30.res, roas: m30.roas, cac: m30.cac });
 
-            brands[brandName].metrics.sixMonth.res += m180.results;
-        });
-
-        // Finalize Brand Aggregates
-        Object.values(brands).forEach((brand: any) => {
-            // Last 7 days
-            const m7 = brand.metrics.last7;
-            m7.roas = m7.spend > 0 ? (m7.rev / m7.spend).toFixed(2) : "0.00";
-            m7.cac = m7.res > 0 ? (m7.spend / m7.res).toFixed(2) : "0.00";
-            m7.spend = `$${m7.spend.toFixed(2)}`;
-            m7.rev = `$${m7.rev.toFixed(2)}`;
-            m7.res = m7.res.toString();
-            m7.cac = `$${m7.cac}`;
-
-            // Previous Month (30 days)
-            const m30 = brand.metrics.prevMonth;
-            m30.roas = m30.spend > 0 ? (m30.rev / m30.spend).toFixed(2) : "0.00";
-            m30.cac = m30.res > 0 ? (m30.spend / m30.res).toFixed(2) : "0.00";
-            m30.spend = `$${m30.spend.toFixed(2)}`;
-            m30.rev = `$${m30.rev.toFixed(2)}`;
-            m30.res = m30.res.toString();
-            m30.cac = `$${m30.cac}`;
-
-            // 6 Months (180 days)
-            const m180 = brand.metrics.sixMonth;
-            // For 6 months, we need aggregate spend from all 180-day campaigns
-            let sixMonthSpend = 0;
-            brand.campaigns.forEach((c: any) => {
-                const cid = c.campaignId;
-                if (data180Map[cid]) {
-                    sixMonthSpend += data180Map[cid].spend;
-                }
+                const m180 = brand.metrics.sixMonth;
+                m180.roas = m180.spend > 0 ? (m180.rev / m180.spend) : 0;
+                m180.cac = m180.res > 0 ? (m180.spend / m180.res) : 0;
+                brand.metrics.sixMonth = formatMetrics({ spend: m180.spend, revenue: m180.rev, results: m180.res, roas: m180.roas, cac: m180.cac });
             });
-            m180.roas = sixMonthSpend > 0 ? (sixMonthSpend * parseFloat(m180.roas || "0") / sixMonthSpend).toFixed(2) : "0.00";
-            m180.cac = m180.res > 0 ? (sixMonthSpend / parseFloat(m180.res)).toFixed(2) : "0.00";
-            m180.res = m180.res.toString();
-            m180.cac = `$${m180.cac}`;
-        });
+        }
 
         return Object.values(brands);
     };
@@ -397,15 +504,19 @@ export default function DashPage() {
                     {syncStatus && typeof syncStatus === 'object' && !syncStatus.can_sync && (
                         <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 border border-amber-200 rounded-xl text-sm">
                             <Clock size={14} className="text-amber-500" />
-                            <span className="text-amber-700 font-medium">
-                                Limit reached · Next sync in {cooldownDisplay || "..."}
+                            <span className="text-amber-700 font-medium whitespace-nowrap">
+                                Limit reached · {cooldownDisplay || "..."}
                             </span>
                         </div>
                     )}
+                    <DateFilter
+                        onRangeChange={handleRangeChange}
+                        className="w-auto"
+                    />
                     <button
                         onClick={handleSync}
                         disabled={isSyncing || (syncStatus && typeof syncStatus === 'object' && !syncStatus.can_sync)}
-                        className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed h-10"
                     >
                         <RefreshCcw size={16} className={cn(isSyncing && "animate-spin")} />
                         {isSyncing
@@ -427,37 +538,75 @@ export default function DashPage() {
                                 <th className="py-6 px-6 bg-slate-50 text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400 border-r border-slate-100">
                                     Account Name
                                 </th>
-                                <th colSpan={5} className="py-4 px-4 bg-slate-50 text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400 text-center border-r border-slate-100/50 relative">
-                                    <span className="relative z-10">Last 7 Days</span>
-                                    <div className="absolute inset-x-4 bottom-2 h-[1px] bg-slate-200/50"></div>
-                                </th>
-                                <th colSpan={5} className="py-4 px-4 bg-slate-50 text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400 text-center border-r border-slate-100/50 relative">
-                                    <span className="relative z-10">Previous Month</span>
-                                    <div className="absolute inset-x-4 bottom-2 h-[1px] bg-slate-200/50"></div>
-                                </th>
-                                <th colSpan={3} className="py-4 px-4 bg-slate-50 text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400 text-center relative">
-                                    <span className="relative z-10">6 Months Avg</span>
-                                    <div className="absolute inset-x-4 bottom-2 h-[1px] bg-slate-200/50"></div>
-                                </th>
+                                {(selectedRange === "All Ranges" || selectedRange === "Last 7 days") && (
+                                    <th colSpan={5} className="py-4 px-4 bg-slate-50 text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400 text-center border-r border-slate-100/50 relative">
+                                        <span className="relative z-10">Last 7 Days</span>
+                                        <div className="absolute inset-x-4 bottom-2 h-[1px] bg-slate-200/50"></div>
+                                    </th>
+                                )}
+                                {(selectedRange === "Custom") && (
+                                    <th colSpan={5} className="py-4 px-4 bg-slate-50 text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400 text-center border-r border-slate-100/50 relative">
+                                        <span className="relative z-10">
+                                            {customStart && customEnd ? `${format(new Date(customStart), 'MMM d')} - ${format(new Date(customEnd), 'MMM d')}` : 'Custom Range'}
+                                        </span>
+                                        <div className="absolute inset-x-4 bottom-2 h-[1px] bg-slate-200/50"></div>
+                                    </th>
+                                )}
+                                {(selectedRange === "All Ranges" || selectedRange === "Last 30 days") && (
+                                    <th colSpan={5} className="py-4 px-4 bg-slate-50 text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400 text-center border-r border-slate-100/50 relative">
+                                        <span className="relative z-10">Previous Month</span>
+                                        <div className="absolute inset-x-4 bottom-2 h-[1px] bg-slate-200/50"></div>
+                                    </th>
+                                )}
+                                {(selectedRange === "All Ranges" || selectedRange === "Last 6 months") && (
+                                    <th colSpan={5} className="py-4 px-4 bg-slate-50 text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400 text-center relative">
+                                        <span className="relative z-10">6 Months Avg</span>
+                                        <div className="absolute inset-x-4 bottom-2 h-[1px] bg-slate-200/50"></div>
+                                    </th>
+                                )}
                             </tr>
                             <tr className="border-b border-slate-100 text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-slate-50">
                                 <th className="py-3 px-6 border-r border-slate-100/50 bg-slate-50"></th>
                                 {/* Last 7 Days */}
-                                <th className="py-3 px-4 text-center font-bold bg-slate-50">Spends</th>
-                                <th className="py-3 px-4 text-center font-bold bg-slate-50">ROAS</th>
-                                <th className="py-3 px-4 text-center font-bold bg-slate-50">Revenue</th>
-                                <th className="py-3 px-4 text-center font-bold bg-slate-50">Results</th>
-                                <th className="py-3 px-4 text-center border-r border-slate-100/50 font-bold bg-slate-50">CAC</th>
+                                {(selectedRange === "All Ranges" || selectedRange === "Last 7 days") && (
+                                    <>
+                                        <th className="py-3 px-4 text-center font-bold bg-slate-50">Spends</th>
+                                        <th className="py-3 px-4 text-center font-bold bg-slate-50">ROAS</th>
+                                        <th className="py-3 px-4 text-center font-bold bg-slate-50">Revenue</th>
+                                        <th className="py-3 px-4 text-center font-bold bg-slate-50">Results</th>
+                                        <th className="py-3 px-4 text-center border-r border-slate-100/50 font-bold bg-slate-50">CAC</th>
+                                    </>
+                                )}
+                                {/* Custom Range */}
+                                {(selectedRange === "Custom") && (
+                                    <>
+                                        <th className="py-3 px-4 text-center font-bold bg-slate-50">Spends</th>
+                                        <th className="py-3 px-4 text-center font-bold bg-slate-50">ROAS</th>
+                                        <th className="py-3 px-4 text-center font-bold bg-slate-50">Revenue</th>
+                                        <th className="py-3 px-4 text-center font-bold bg-slate-50">Results</th>
+                                        <th className="py-3 px-4 text-center border-r border-slate-100/50 font-bold bg-slate-50">CAC</th>
+                                    </>
+                                )}
                                 {/* Prev Month */}
-                                <th className="py-3 px-4 text-center font-bold bg-slate-50">Spends</th>
-                                <th className="py-3 px-4 text-center font-bold bg-slate-50">ROAS</th>
-                                <th className="py-3 px-4 text-center font-bold bg-slate-50">Revenue</th>
-                                <th className="py-3 px-4 text-center font-bold bg-slate-50">Results</th>
-                                <th className="py-3 px-4 text-center border-r border-slate-100/50 font-bold bg-slate-50">CAC</th>
+                                {(selectedRange === "All Ranges" || selectedRange === "Last 30 days") && (
+                                    <>
+                                        <th className="py-3 px-4 text-center font-bold bg-slate-50">Spends</th>
+                                        <th className="py-3 px-4 text-center font-bold bg-slate-50">ROAS</th>
+                                        <th className="py-3 px-4 text-center font-bold bg-slate-50">Revenue</th>
+                                        <th className="py-3 px-4 text-center font-bold bg-slate-50">Results</th>
+                                        <th className="py-3 px-4 text-center border-r border-slate-100/50 font-bold bg-slate-50">CAC</th>
+                                    </>
+                                )}
                                 {/* 6 Months */}
-                                <th className="py-3 px-4 text-center font-bold bg-slate-50">Results</th>
-                                <th className="py-3 px-4 text-center font-bold bg-slate-50">ROAS</th>
-                                <th className="py-3 px-4 text-center font-bold bg-slate-50">CAC</th>
+                                {(selectedRange === "All Ranges" || selectedRange === "Last 6 months") && (
+                                    <>
+                                        <th className="py-3 px-4 text-center font-bold bg-slate-50">Spends</th>
+                                        <th className="py-3 px-4 text-center font-bold bg-slate-50">ROAS</th>
+                                        <th className="py-3 px-4 text-center font-bold bg-slate-50">Revenue</th>
+                                        <th className="py-3 px-4 text-center font-bold bg-slate-50">Results</th>
+                                        <th className="py-3 px-4 text-center border-r border-slate-100/50 font-bold bg-slate-50">CAC</th>
+                                    </>
+                                )}
                             </tr>
                         </thead>
                         <tbody>
@@ -469,6 +618,7 @@ export default function DashPage() {
                                         isExpanded={expandedRows[brand.brand]}
                                         onToggle={() => toggleRow(brand.brand)}
                                         metrics={brand.metrics}
+                                        selectedRange={selectedRange}
                                     />
                                     {expandedRows[brand.brand] && brand.campaigns.map((camp: any) => (
                                         <MetricRow
@@ -476,6 +626,7 @@ export default function DashPage() {
                                             label={camp.label}
                                             level={1}
                                             metrics={camp.metrics}
+                                            selectedRange={selectedRange}
                                         />
                                     ))}
                                 </React.Fragment>
