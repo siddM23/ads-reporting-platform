@@ -22,12 +22,13 @@ npm install -g pm2
 ```
 ## 4. System
 
-### Frontend
+
 Frontend : Node(Next js)
 Backend : Python(FastAPI)
 Database : DynamoDB
 
-Frontend :
+### Frontend
+
 cd frontend
 npm install
 npm run build
