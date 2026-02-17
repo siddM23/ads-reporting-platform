@@ -1,11 +1,11 @@
 # CUBE-Ads Reporting Platform
 
 ## 1. System Setup
-Update system and install dependencies:
+
 ```bash
 sudo apt install -y nginx python3-pip python3-venv git certbot python3-certbot-nginx
 ```
-run scripts/setup_db.py # Create tables on dynamodb
+### run scripts/setup_db.py # Create tables on dynamodb
 
 
 ## 2. Install Node.js (via NVM)
