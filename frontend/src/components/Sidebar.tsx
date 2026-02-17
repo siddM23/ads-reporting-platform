@@ -20,8 +20,8 @@ const Sidebar = () => {
     return (
         <div className="flex flex-col h-screen w-16 md:w-20 bg-white border-r border-slate-200">
             <div className="flex items-center justify-center h-16 border-b border-slate-100">
-                <div className="w-10 h-10 flex items-center justify-center">
-                    <Image src="/cube_logo.png" alt="Cube Logo" width={32} height={32} className="object-contain" />
+                <div className="w-14 h-14 flex items-center justify-center">
+                    <Image src="/cube_logo.png" alt="Cube Logo" width={48} height={48} className="object-contain" />
                 </div>
             </div>
 
