@@ -21,6 +21,8 @@ nvm use 20
 npm install -g pm2
 ```
 ## 4. System
+
+### Frontend
 Frontend : Node(Next js)
 Backend : Python(FastAPI)
 Database : DynamoDB
