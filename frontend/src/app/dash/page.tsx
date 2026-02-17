@@ -260,7 +260,7 @@ export default function DashPage() {
             spend: `$${m.spend.toFixed(2)}`,
             roas: m.roas.toFixed(2),
             rev: `$${m.revenue.toFixed(2)}`,
-            res: m.results.toFixed(0), // Removed toString to simple int format
+            res: m.results.toFixed(0),
             cac: `$${m.cac.toFixed(2)}`
         });
 
@@ -273,6 +273,11 @@ export default function DashPage() {
                 if (row.platform !== targetPlatform) return;
                 const brandName = row.account_name || "Unknown Account";
 
+                const m = extractMetrics(row);
+
+                // Skip campaign if spend is 0
+                if (m.spend <= 0) return;
+
                 if (!brands[brandName]) {
                     brands[brandName] = {
                         brand: brandName,
@@ -280,8 +285,6 @@ export default function DashPage() {
                         campaigns: []
                     };
                 }
-
-                const m = extractMetrics(row);
 
                 brands[brandName].campaigns.push({
                     label: row.campaign_name,
@@ -315,6 +318,24 @@ export default function DashPage() {
                 if (row.platform !== targetPlatform) return;
                 const brandName = row.account_name || "Unknown Account";
 
+                const m7 = extractMetrics(row);
+                const m30 = data30Map[row.campaign_id] || { spend: 0, revenue: 0, results: 0, roas: 0, cac: 0 };
+                const m180 = data180Map[row.campaign_id] || { spend: 0, revenue: 0, results: 0, roas: 0, cac: 0 };
+
+                // Determine if we should show this campaign based on spend in the selected range
+                let shouldShow = false;
+                if (selectedRange === "All Ranges") {
+                    shouldShow = m7.spend > 0 || m30.spend > 0 || m180.spend > 0;
+                } else if (selectedRange === "Last 7 days") {
+                    shouldShow = m7.spend > 0;
+                } else if (selectedRange === "Last 30 days") {
+                    shouldShow = m30.spend > 0;
+                } else if (selectedRange === "Last 6 months") {
+                    shouldShow = m180.spend > 0;
+                }
+
+                if (!shouldShow) return;
+
                 if (!brands[brandName]) {
                     brands[brandName] = {
                         brand: brandName,
@@ -326,10 +347,6 @@ export default function DashPage() {
                         campaigns: []
                     };
                 }
-
-                const m7 = extractMetrics(row);
-                const m30 = data30Map[row.campaign_id] || { spend: 0, revenue: 0, results: 0, roas: 0, cac: 0 };
-                const m180 = data180Map[row.campaign_id] || { spend: 0, revenue: 0, results: 0, roas: 0, cac: 0 };
 
                 brands[brandName].campaigns.push({
                     label: row.campaign_name,
