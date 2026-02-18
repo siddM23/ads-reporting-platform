@@ -268,11 +268,11 @@ async def async_get_cached_insights(days: int = 7, integration_ids: list = None)
     Asynchronously returns data from DynamoDB without hitting Meta API.
     If integration_ids is provided, it returns only data for those accounts.
     """
-    if integration_ids:
+    if integration_ids is not None:
         # Use the new granular index for isolation
         data = await metrics_db.async_read_metrics_by_integrations(integration_ids, days)
     else:
-        # Legacy/Global fallback
+        # Legacy/Global fallback (Only if no scope is provided)
         data = await metrics_db.async_read_campaign_metrics(days)
         
     for row in data:
