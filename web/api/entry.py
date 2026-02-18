@@ -441,10 +441,12 @@ async def update_preferences(prefs: UserPreferences, user: dict = Depends(get_cu
         print(f"Update preferences error: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 @app.get("/api/auth/meta/login")
-def meta_login(user_id: Optional[str] = Query(None)):
+def meta_login(user: dict = Depends(get_current_user)):
     """Redirects to Facebook OAuth Dialog"""
     if not META_CLIENT_ID:
         raise HTTPException(status_code=500, detail="META_CLIENT_ID not configured")
+    
+    user_id = user.get("user_id")
     
     # Business apps need real permissions to trigger the dialog
     scope = "email,ads_read"
@@ -454,8 +456,8 @@ def meta_login(user_id: Optional[str] = Query(None)):
     
     # Use safe='' to encode EVERYTHING including // and :
     encoded_uri = urllib.parse.quote(META_REDIRECT_URI, safe='')
-    url = f"https://www.facebook.com/v21.0/dialog/oauth?client_id={META_CLIENT_ID}&redirect_uri={encoded_uri}&scope={scope}&state={state}"
-    print(f"DEBUG: Generated Meta OAuth URL: {url}")
+    url = f"https://www.facebook.com/v24.0/dialog/oauth?client_id={META_CLIENT_ID}&redirect_uri={encoded_uri}&scope={scope}&state={state}"
+    print(f"DEBUG: Generated Meta OAuth URL: {url} (User ID: {user_id})")
     return {"url": url}
 
 from fastapi.responses import RedirectResponse
@@ -544,10 +546,12 @@ async def meta_callback(code: str, background_tasks: BackgroundTasks, state: Opt
     return RedirectResponse(url=f"{FRONTEND_URL}/integrations?success=true&platform=meta")
 
 @app.get("/api/auth/google/login")
-def google_login(user_id: Optional[str] = Query(None)):
+def google_login(user: dict = Depends(get_current_user)):
     """Redirects to Google OAuth Dialog"""
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=500, detail="GOOGLE_CLIENT_ID not configured")
+    
+    user_id = user.get("user_id")
     
     # Pass user_id in state if present
     state = f"user_id={user_id}" if user_id else ""
@@ -565,7 +569,7 @@ def google_login(user_id: Optional[str] = Query(None)):
     }
     encoded_params = urllib.parse.urlencode(params)
     url = f"https://accounts.google.com/o/oauth2/v2/auth?{encoded_params}"
-    print(f"DEBUG: Generated Google OAuth URL: {url}")
+    print(f"DEBUG: Generated Google OAuth URL: {url} (User ID: {user_id})")
     return {"url": url}
 
 @app.get("/api/auth/google/callback")
