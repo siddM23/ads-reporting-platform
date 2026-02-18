@@ -242,7 +242,7 @@ export default function IntegrationsPage() {
                         accounts={filterAccounts(platform.id)}
                         accentColor={platform.accentColor}
                         onConnect={platform.onConnect}
-                        onDelete={handleDelete}
+                        onDelete={(accountId) => handleDelete(platform.id, accountId)}
                     />
                 ))}
             </div>
