@@ -2,7 +2,7 @@ module.exports = {
     apps: [
         {
             name: "frontend",
-            cwd: "./frontend",
+            cwd: "./web",
             script: "npm",
             args: "start",
             env: {
@@ -12,8 +12,8 @@ module.exports = {
         },
         {
             name: "backend",
-            cwd: "./frontend/api",
-            script: "main.py",
+            cwd: "./web/api",
+            script: "entry.py",
             interpreter: "python3",
             env: {
                 PORT: 8000

@@ -2,22 +2,22 @@
     "version": 2,
     "builds": [
         {
-            "src": "frontend/package.json",
+            "src": "web/package.json",
             "use": "@vercel/next"
         },
         {
-            "src": "frontend/api/entry.py",
+            "src": "web/api/entry.py",
             "use": "@vercel/python"
         }
     ],
     "routes": [
         {
             "src": "/api/(.*)",
-            "dest": "frontend/api/entry.py"
+            "dest": "web/api/entry.py"
         },
         {
             "src": "/(.*)",
-            "dest": "frontend/$1"
+            "dest": "web/$1"
         }
     ]
 }
