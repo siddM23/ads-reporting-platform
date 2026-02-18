@@ -77,7 +77,8 @@ def get_account_name(customer_id, refresh_token):
 
 def discover_accounts(refresh_token, email=None):
     """
-    Returns a list of accessible customer IDs for the given token using Google Ads Client.
+    Returns a list of accessible Client accounts for the given token.
+    Skips Manager accounts to avoid "Metrics cannot be requested for manager" errors.
     """
     if email and email in _discovery_cache:
         print(f"GOOGLE DISCOVERY: Using cached IDs for {email}")
@@ -87,28 +88,26 @@ def discover_accounts(refresh_token, email=None):
         client = get_google_client(refresh_token)
         customer_service = client.get_service("CustomerService")
         
-        print(f"GOOGLE DISCOVERY: Listing accessible customers using SDK...")
+        print(f"GOOGLE DISCOVERY: Listing direct accessible customers...")
         accessible_customers = customer_service.list_accessible_customers()
         resource_names = accessible_customers.resource_names
         base_ids = [rn.split("/")[-1] for rn in resource_names]
         
-        print(f"GOOGLE DISCOVERY: Found {len(base_ids)} base accounts: {base_ids}")
+        found_accounts = {} # ID -> Name
         
-        # Dictionary to store ID -> Name mapping
-        found_accounts = {}
-        
-        # 1. Get names for base accounts
         for bid in base_ids:
-            name = get_account_name(bid, refresh_token) or f"Google Account ({bid})"
-            found_accounts[bid] = name
+            # Check if this base account is a manager or a client
+            is_manager, name = get_account_info(bid, refresh_token)
+            
+            if is_manager:
+                print(f"GOOGLE DISCOVERY: {bid} is a Manager. Finding sub-accounts...")
+                sub_accounts = find_sub_accounts_sdk(bid, refresh_token)
+                for sub in sub_accounts:
+                    found_accounts[sub['id']] = sub['name']
+            else:
+                # Direct client account
+                found_accounts[bid] = name or f"Google Account ({bid})"
 
-        # 2. Check for sub-accounts (if base is manager)
-        for base_id in base_ids:
-            sub_accounts = find_sub_accounts_sdk(base_id, refresh_token)
-            for sub in sub_accounts:
-                # Add or update with the actual name found
-                found_accounts[sub['id']] = sub['name']
-        
         # Return list of {id, name}
         result = [{'id': k, 'name': v} for k, v in found_accounts.items()]
         
@@ -118,6 +117,27 @@ def discover_accounts(refresh_token, email=None):
     except Exception as e:
         print(f"GOOGLE DISCOVERY SDK ERROR: {e}")
         return []
+
+def get_account_info(customer_id, refresh_token):
+    """
+    Returns (is_manager: bool, name: str) for a given account.
+    """
+    try:
+        client = get_google_client(refresh_token, login_customer_id=customer_id)
+        ga_service = client.get_service("GoogleAdsService")
+        query = "SELECT customer.descriptive_name, customer.manager FROM customer LIMIT 1"
+        
+        search_request = client.get_type("SearchGoogleAdsRequest")
+        search_request.customer_id = str(customer_id)
+        search_request.query = query
+        
+        response = ga_service.search(request=search_request)
+        for row in response:
+            return row.customer.manager, row.customer.descriptive_name
+    except Exception as e:
+        print(f"Error fetching info for {customer_id}: {e}")
+        return False, None
+    return False, None
 
 def find_sub_accounts_sdk(manager_id, refresh_token):
     """
@@ -231,41 +251,28 @@ def fetch_for_customer(customer_id, refresh_token, days=7, login_customer_id=Non
 
     except Exception as e:
         error_str = str(e)
-        if "DEVELOPER_TOKEN_NOT_APPROVED" in error_str:
-            print(f"[{customer_id}]GOOGLE ADS ERROR: Your Developer Token is only approved for TEST ACCOUNTS.")
-            print(f"[{customer_id}]Solution: Use a Google Ads Test Manager account or apply for 'Basic Access' in the Google Ads API Center.")
-        elif "PERMISSION_DENIED" in error_str:
-            print(f"[{customer_id}]GOOGLE ADS ERROR: Permission Denied. Ensure the authenticated user has access to account {customer_id}.")
-            # This might be a user removal, so we flag reauth
-            integrations_db.update_integration_status(
-                platform="google",
-                account_id=customer_id,
-                needs_reauth=True,
-                error_message="Permission Denied"
-            )
-        elif "invalid_grant" in error_str or "unauthorized_client" in error_str:
-            print(f"[{customer_id}] GOOGLE AUTH ERROR: Refresh token invalid or revoked.")
-            integrations_db.update_integration_status(
-                platform="google",
-                account_id=customer_id,
-                needs_reauth=True,
-                error_message="Invalid Refresh Token"
-            )
-        elif "REQUESTED_METRICS_FOR_MANAGER" in error_str or "Metrics cannot be requested for a manager account" in error_str:
+        
+        # Check for manager account errors
+        is_manager_error = (
+            "REQUESTED_METRICS_FOR_MANAGER" in error_str or 
+            "Metrics cannot be requested for a manager account" in error_str or
+            "METRICS_CANNOT_BE_REQUESTED_FOR_MANAGER" in error_str
+        )
+
+        if is_manager_error:
             print(f"[{customer_id}] GOOGLE ADS INFO: Account {customer_id} is a Manager Account. Fetching sub-accounts...")
             try:
-                # Use the current customer_id as the manager (login_customer_id) for discovery
+                # Use the current customer_id as the manager context for children
                 sub_accounts_list = find_sub_accounts_sdk(customer_id, refresh_token)
                 all_sub_data = []
                 for sub_acc in sub_accounts_list:
                     sub_id = sub_acc['id']
-                    print(f"[{customer_id}] -> Fetching sub-account {sub_id} ({sub_acc['name']})...")
-                    # Recursively fetch for the sub-account, ensuring we use the manager's credentials context
+                    print(f"[{customer_id}] -> Fetching child sub-account {sub_id} ({sub_acc['name']})...")
                     sub_data = fetch_for_customer(
                         sub_id, 
                         refresh_token, 
                         days=days, 
-                        login_customer_id=customer_id, 
+                        login_customer_id=customer_id, # Very important: use parent as login context
                         start_date=start_date, 
                         end_date=end_date
                     )
@@ -275,6 +282,15 @@ def fetch_for_customer(customer_id, refresh_token, days=7, login_customer_id=Non
             except Exception as sub_e:
                 print(f"[{customer_id}] Error handling sub-accounts for manager: {sub_e}")
                 return []
+        
+        elif "DEVELOPER_TOKEN_NOT_APPROVED" in error_str:
+            print(f"[{customer_id}]GOOGLE ADS ERROR: Your Developer Token is only approved for TEST ACCOUNTS.")
+        elif "PERMISSION_DENIED" in error_str:
+            print(f"[{customer_id}]GOOGLE ADS ERROR: Permission Denied for account {customer_id}.")
+            integrations_db.update_integration_status(platform="google", account_id=customer_id, needs_reauth=True, error_message="Permission Denied")
+        elif "invalid_grant" in error_str or "unauthorized_client" in error_str:
+            print(f"[{customer_id}] GOOGLE AUTH ERROR: Refresh token invalid.")
+            integrations_db.update_integration_status(platform="google", account_id=customer_id, needs_reauth=True, error_message="Invalid Token")
         else:
             print(f"[{customer_id}]SDK Error fetching Google insights: {e}")
         return []
