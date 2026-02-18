@@ -118,6 +118,69 @@ class DynamoDB:
             import asyncio
             return await asyncio.to_thread(self.read_campaign_metrics, range_days)
 
+    async def async_read_metrics_by_integrations(self, integration_ids: List[str], range_days: int) -> List[Dict[str, Any]]:
+        """
+        Fetches metrics for multiple integration IDs in parallel using the IntegrationRangeIndex GSI.
+        Provides isolation by only returning data belonging to the specified integrations.
+        """
+        import asyncio
+        from boto3.dynamodb.conditions import Key
+
+        if not integration_ids:
+            return []
+
+        async def query_integration(integration_id):
+            items = []
+            try:
+                # We use the same persistent connection pattern as async_read_campaign_metrics
+                if self.async_table:
+                    response = await self.async_table.query(
+                        IndexName='IntegrationRangeIndex',
+                        KeyConditionExpression=Key('integration_id').eq(str(integration_id)) & Key('range_days').eq(int(range_days))
+                    )
+                    items.extend(response.get('Items', []))
+                    
+                    while 'LastEvaluatedKey' in response:
+                        response = await self.async_table.query(
+                            IndexName='IntegrationRangeIndex',
+                            KeyConditionExpression=Key('integration_id').eq(str(integration_id)) & Key('range_days').eq(int(range_days)),
+                            ExclusiveStartKey=response['LastEvaluatedKey']
+                        )
+                        items.extend(response.get('Items', []))
+                else:
+                    # Fallback to creating new connection if connect() wasn't called (e.g. in some scripts)
+                    async with self.session.resource(
+                        'dynamodb',
+                        region_name=self.region,
+                        aws_access_key_id=self.access_key,
+                        aws_secret_access_key=self.secret_key
+                    ) as dynamodb:
+                        table = await dynamodb.Table(self.table_name)
+                        response = await table.query(
+                            IndexName='IntegrationRangeIndex',
+                            KeyConditionExpression=Key('integration_id').eq(str(integration_id)) & Key('range_days').eq(int(range_days))
+                        )
+                        items.extend(response.get('Items', []))
+                        
+                        while 'LastEvaluatedKey' in response:
+                            response = await table.query(
+                                IndexName='IntegrationRangeIndex',
+                                KeyConditionExpression=Key('integration_id').eq(str(integration_id)) & Key('range_days').eq(int(range_days)),
+                                ExclusiveStartKey=response['LastEvaluatedKey']
+                            )
+                            items.extend(response.get('Items', []))
+            except Exception as e:
+                print(f"Error querying {self.table_name} for integration {integration_id}: {e}")
+            return items
+
+        # Trigger parallel queries for each integration_id
+        tasks = [query_integration(iid) for iid in integration_ids]
+        results = await asyncio.gather(*tasks)
+        
+        # Flatten the list of lists into a single list of metrics
+        flattened_results = [item for sublist in results for item in sublist]
+        return flattened_results
+
     async def async_list_integrations(self, platform: str = None, email: str = None, user_id: str = None) -> List[Dict[str, Any]]:
         """
         Asynchronously lists active integrations.
@@ -132,8 +195,8 @@ class DynamoDB:
             
             if self.async_table:
                 if user_id:
-                    # Ideally we'd have a GSI on user_id, but for now we scan + filter
-                    # If we had GSI: IndexName='UserIdIndex', KeyConditionExpression=Key('user_id').eq(user_id)
+                    # If we have a lot of items, a GSI would be better.
+                    # For now scan + filter on user_id
                     filter_expr = filter_expr & Attr('user_id').eq(user_id)
                     response = await self.async_table.scan(FilterExpression=filter_expr)
                 elif email:
@@ -157,6 +220,35 @@ class DynamoDB:
             print(f"Async list integrations failed: {e}")
             import asyncio
             return await asyncio.to_thread(self.list_integrations, platform, email, user_id)
+
+    async def async_get_integration(self, integration_id: str, user_id: str = None) -> Dict[str, Any]:
+        """
+        Retrieves a specific integration by its UUID.
+        Optionally validates that it belongs to the specified user_id.
+        """
+        try:
+            if not self.async_table:
+                # Fallback or wait for connect? Assume connected for API.
+                return None
+                
+            from boto3.dynamodb.conditions import Key
+            
+            # Direct lookup by PK
+            response = await self.async_table.get_item(Key={'id': integration_id})
+            item = response.get('Item')
+            
+            if not item or item.get('is_deleted', False):
+                return None
+                
+            # Security check: ensure user owns this integration if user_id provided
+            if user_id and item.get('user_id') != user_id:
+                print(f"SECURITY ALERT: User {user_id} tried to access integration {integration_id} owned by {item.get('user_id')}")
+                return None
+                
+            return item
+        except Exception as e:
+            print(f"Error getting integration {integration_id}: {e}")
+            return None
 
     async def async_query(self, **kwargs) -> Dict[str, Any]:
         """
@@ -202,9 +294,10 @@ class DynamoDB:
             import asyncio
             return await asyncio.to_thread(self.table.put_item, **kwargs)
 
-    def write_campaign_metrics(self, campaign_id: str, range_days: int, metrics: Dict[str, Any]):
+    def write_campaign_metrics(self, campaign_id: str, range_days: int, metrics: Dict[str, Any], integration_id: str = None):
         """
         Stores campaign metrics (for Dash). Single item write with retry.
+        Includes integration_id for cross-account isolation.
         """
         import datetime
         import time
@@ -215,6 +308,9 @@ class DynamoDB:
             'last_synced': datetime.datetime.utcnow().isoformat(),
             **metrics
         }
+        
+        if integration_id:
+            item['integration_id'] = str(integration_id)
         
         for attempt in range(5):
             try:
@@ -230,7 +326,7 @@ class DynamoDB:
                     return False
         return False
 
-    def batch_write_campaign_metrics(self, campaigns: List[Dict[str, Any]], range_days: int):
+    def batch_write_campaign_metrics(self, campaigns: List[Dict[str, Any]], range_days: int, integration_id: str = None):
         """
         Batch writes campaigns to DynamoDB with retry logic.
         Much faster than individual writes.
@@ -246,15 +342,26 @@ class DynamoDB:
         # Prepare items
         items = []
         for campaign in campaigns:
-            campaign_id = campaign.get("campaign_id")
-            if campaign_id:
+            # We allow campaign to be a dict that might already have campaign_id or it's passed separately
+            c_id = campaign.get("campaign_id")
+            if c_id:
+                # Remove ID from metrics dict to avoid duplication if it's there
                 metrics = {k: v for k, v in campaign.items() if k != "campaign_id"}
-                items.append({
-                    'campaign_id': str(campaign_id),
+                
+                item = {
+                    'campaign_id': str(c_id),
                     'range_days': int(range_days),
                     'last_synced': timestamp,
                     **metrics
-                })
+                }
+                
+                if integration_id:
+                    item['integration_id'] = str(integration_id)
+                elif 'integration_id' in campaign:
+                    # Allow it to be passed inside the campaign dict too
+                    item['integration_id'] = str(campaign['integration_id'])
+                
+                items.append(item)
         
         # DynamoDB batch_write_item supports max 25 items per batch
         batch_size = 25
@@ -276,7 +383,8 @@ class DynamoDB:
                         print(f"Batch write error: {str(e)}")
                         break
         
-        print(f"Batch wrote {len(items)} campaigns for {range_days} days")
+        integration_ctx = f" for integration {integration_id}" if integration_id else ""
+        print(f"Batch wrote {len(items)} campaigns for {range_days} days{integration_ctx}")
         return True
 
     def read_campaign_metrics(self, range_days: int) -> List[Dict[str, Any]]:
@@ -319,6 +427,7 @@ class DynamoDB:
         """
         Stores account integration details. 
         Uses UUID as PK. Checks for existing integration by platform+account_id to update or resurrect.
+        Returns the integration UUID (id).
         """
         try:
             import datetime
@@ -358,7 +467,6 @@ class DynamoDB:
                 'needs_reauth': needs_reauth,
                 'last_token_refresh_at': last_token_refresh_at,
                 'access_token_expires_at': access_token_expires_at,
-                'access_token_expires_at': access_token_expires_at,
                 'updated_at': timestamp
             })
             
@@ -369,10 +477,10 @@ class DynamoDB:
             item = {k: v for k, v in item.items() if v is not None}
             
             self.table.put_item(Item=item)
-            return True
+            return item['id']
         except Exception as e:
             print(f"Error saving integration: {str(e)}")
-            return False
+            return None
 
     def update_integration_status(self, platform: str, account_id: str, needs_reauth: bool = None, error_message: str = None):
         """
@@ -486,6 +594,33 @@ class DynamoDB:
                 return await asyncio.to_thread(self.delete_integration, platform, account_id)
         except Exception as e:
             print(f"Error asynchronously deleting integration: {str(e)}")
+            return False
+
+    async def async_delete_by_id(self, integration_id: str):
+        """
+        Asynchronously soft deletes an integration by its ID.
+        """
+        try:
+            if self.async_table:
+                await self.async_table.update_item(
+                    Key={'id': integration_id},
+                    UpdateExpression="SET is_deleted = :d, status = :s",
+                    ExpressionAttributeValues={":d": True, ":s": "Inactive"}
+                )
+                return True
+            else:
+                # Fallback to sync
+                def sync_delete():
+                    return self.table.update_item(
+                        Key={'id': integration_id},
+                        UpdateExpression="SET is_deleted = :d, status = :s",
+                        ExpressionAttributeValues={":d": True, ":s": "Inactive"}
+                    )
+                import asyncio
+                await asyncio.to_thread(sync_delete)
+                return True
+        except Exception as e:
+            print(f"Error deleting integration by ID {integration_id}: {e}")
             return False
 
     def list_integrations(self, platform: str = None, email: str = None, user_id: str = None) -> List[Dict[str, Any]]:

@@ -51,13 +51,11 @@ def fetch_for_account(account_id, token, days=7, start_date=None, end_date=None)
             time_range = {"since": s_date, "until": e_date}
             print(f"[{account_id}] Fetching Meta insights for last {days} days (from {s_date})...")
 
-        print(f"[{account_id}] Fetching Meta insights for last {days} days (from {start_date})...")
-
         # 3. Make the API request
         url = f"https://graph.facebook.com/{FB_VERSION}/{clean_id}/insights"
         params = {
             "level": "campaign",
-            "fields": "campaign_id,campaign_name,spend,website_purchase_roas,action_values,actions",
+            "fields": "campaign_id,campaign_name,spend,website_purchase_roas,action_values,actions,date_start,date_stop",
             "time_range": json.dumps(time_range),
             "access_token": token,
             "limit": 500  # Fetch more rows per page
@@ -110,7 +108,7 @@ def fetch_for_account(account_id, token, days=7, start_date=None, end_date=None)
             print(f"[{account_id}] Error fetching Meta insights: {e}")
         return []
 
-def write_to_dynamodb(data, days):
+def write_to_dynamodb(data, days, integration_id=None):
     """
     Batch saves campaign analytics to the MetaAdsInsights table.
     """
@@ -119,16 +117,27 @@ def write_to_dynamodb(data, days):
     # Ensure the metrics table exists before writing
     metrics_db.create_table(pk='campaign_id', sk='range_days', sk_type='N')
     # Use batch write for efficiency
-    metrics_db.batch_write_campaign_metrics(data, days)
+    metrics_db.batch_write_campaign_metrics(data, days, integration_id=integration_id)
 
-def fetch_and_store(days: int = 7):
+def fetch_and_store(days: int = 7, integration_ids: list = None):
     """
-    Fetches data for all connected Meta accounts and stores in DynamoDB.
+    Fetches data for connected Meta accounts and stores in DynamoDB.
+    If integration_ids is provided, it ONLY syncs those specific accounts.
     """
-    integrations = integrations_db.list_integrations(platform="meta")
+    if integration_ids:
+        # Fetch specific records by their UUIDs
+        integrations = []
+        for iid in integration_ids:
+            # We use synchronous lookup for now as this is called in a ThreadPoolExecutor 
+            # Or we could use the resource directly. integrations_db has async methods mostly.
+            # list_integrations in database.py is sync.
+            all_meta = integrations_db.list_integrations(platform="meta")
+            integrations = [i for i in all_meta if i.get('id') in integration_ids]
+    else:
+        integrations = integrations_db.list_integrations(platform="meta")
     
     if not integrations:
-        print("No Meta integrations found.")
+        print("No Meta integrations found to sync.")
         return []
 
     print(f"Syncing {len(integrations)} Meta accounts for {days} days...")
@@ -138,6 +147,7 @@ def fetch_and_store(days: int = 7):
     for account in integrations:
         account_id = account.get('account_id')
         token = account.get('access_token')
+        integration_id = account.get('id')
         
         if not account_id or not token:
             continue
@@ -159,6 +169,7 @@ def fetch_and_store(days: int = 7):
             acc_name = f"Account {account_id}"
 
         # Add account name and platform to each row
+        # (date_start and date_stop are now coming from the API)
         for row in account_data:
             row['account_name'] = acc_name
             row['platform'] = 'meta'
@@ -175,19 +186,23 @@ def fetch_and_store(days: int = 7):
 
         # Batch write to DynamoDB
         if account_data:
-            write_to_dynamodb(account_data, days)
+            write_to_dynamodb(account_data, days, integration_id=integration_id)
             all_results.extend(account_data)
             
     print(f"✅ Synced {len(all_results)} campaigns for {days} days")
     print(f"✅ Synced {len(all_results)} campaigns for {days} days")
     return all_results
 
-def fetch_custom_range(start_date, end_date):
+def fetch_custom_range(start_date, end_date, integration_ids: list = None):
     """
-    Fetches data for all connected Meta accounts for a custom date range.
+    Fetches data for specific Meta accounts for a custom date range.
     Does NOT store in DynamoDB, just returns the data.
     """
-    integrations = integrations_db.list_integrations(platform="meta")
+    if integration_ids:
+        all_meta = integrations_db.list_integrations(platform="meta")
+        integrations = [i for i in all_meta if i.get('id') in integration_ids]
+    else:
+        integrations = integrations_db.list_integrations(platform="meta")
     
     if not integrations:
         return []
@@ -226,17 +241,17 @@ def fetch_custom_range(start_date, end_date):
 
 import concurrent.futures
 
-def fetch_and_store_all():
+def fetch_and_store_all(integration_ids: list = None):
     """
     Syncs data for all 3 dashboard time ranges: 7, 30, and 180 days.
     Uses threaded workers to fetch ranges concurrently.
     """
-    print("🚀 Starting full multi-range sync...")
+    print(f"🚀 Starting full multi-range sync for {len(integration_ids) if integration_ids else 'all'} accounts...")
     
     # Run fetches for 7, 30, and 180 days in parallel
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         days_list = [7, 30, 180]
-        future_to_days = {executor.submit(fetch_and_store, days): days for days in days_list}
+        future_to_days = {executor.submit(fetch_and_store, days, integration_ids): days for days in days_list}
         
         for future in concurrent.futures.as_completed(future_to_days):
             days = future_to_days[future]
@@ -248,11 +263,18 @@ def fetch_and_store_all():
                 
     print("✅ Full multi-range sync completed.")
 
-async def async_get_cached_insights(days: int = 7):
+async def async_get_cached_insights(days: int = 7, integration_ids: list = None):
     """
     Asynchronously returns data from DynamoDB without hitting Meta API.
+    If integration_ids is provided, it returns only data for those accounts.
     """
-    data = await metrics_db.async_read_campaign_metrics(days)
+    if integration_ids:
+        # Use the new granular index for isolation
+        data = await metrics_db.async_read_metrics_by_integrations(integration_ids, days)
+    else:
+        # Legacy/Global fallback
+        data = await metrics_db.async_read_campaign_metrics(days)
+        
     for row in data:
         if 'platform' not in row:
             row['platform'] = 'meta'

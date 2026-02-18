@@ -11,6 +11,7 @@ interface PlatformCardProps {
     description: string;
     icon: React.ReactNode;
     accounts: {
+        id: string;
         email: string;
         status: "Active" | "Inactive";
         account_id: string;
@@ -19,7 +20,7 @@ interface PlatformCardProps {
     }[];
     accentColor: string;
     onConnect: () => void;
-    onDelete: (accountId: string) => void;
+    onDelete: (id: string) => void;
 }
 
 const PlatformCard: React.FC<PlatformCardProps> = ({
@@ -51,7 +52,7 @@ const PlatformCard: React.FC<PlatformCardProps> = ({
                 <div className="space-y-4 max-h-[200px] overflow-y-auto pr-2">
                     {accounts.length > 0 ? (
                         accounts.map((acc, i) => (
-                            <div key={acc.account_id || i} className="flex items-center justify-between p-4 bg-white border border-slate-200 rounded-2xl hover:border-slate-300 transition-all shadow-sm shadow-slate-100 hover:shadow-md">
+                            <div key={acc.id || i} className="flex items-center justify-between p-4 bg-white border border-slate-200 rounded-2xl hover:border-slate-300 transition-all shadow-sm shadow-slate-100 hover:shadow-md">
                                 <div className="flex flex-col gap-0.5">
                                     <span className="text-[14px] font-bold text-slate-900">{acc.account_name}</span>
                                     <span className="text-[11px] text-slate-500 font-medium">{acc.email}</span>
@@ -73,7 +74,7 @@ const PlatformCard: React.FC<PlatformCardProps> = ({
                                         </button>
                                     )}
                                     <button
-                                        onClick={() => onDelete(acc.account_id)}
+                                        onClick={() => onDelete(acc.id)}
                                         className="text-slate-300 hover:text-red-500 hover:bg-red-50 p-2 rounded-xl transition-all"
                                     >
                                         <X size={18} />
@@ -173,11 +174,11 @@ export default function IntegrationsPage() {
         }
     };
 
-    const handleDelete = async (platform: string, accountId: string) => {
+    const handleDelete = async (id: string) => {
         if (!confirm("Are you sure you want to disconnect this account?")) return;
 
         try {
-            const res = await authFetch(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/integrations/${platform}/${accountId}`, {
+            const res = await authFetch(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/integrations/${id}`, {
                 method: "DELETE"
             });
             if (res.ok) {
@@ -193,6 +194,7 @@ export default function IntegrationsPage() {
         return accounts
             .filter(a => a?.platform?.toLowerCase() === platform.toLowerCase())
             .map(a => ({
+                id: a.id,
                 email: a.email,
                 status: a.status as "Active" | "Inactive",
                 account_id: a.account_id,
@@ -242,7 +244,7 @@ export default function IntegrationsPage() {
                         accounts={filterAccounts(platform.id)}
                         accentColor={platform.accentColor}
                         onConnect={platform.onConnect}
-                        onDelete={(accountId) => handleDelete(platform.id, accountId)}
+                        onDelete={(id) => handleDelete(id)}
                     />
                 ))}
             </div>

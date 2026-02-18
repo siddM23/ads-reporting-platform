@@ -218,6 +218,8 @@ def fetch_for_customer(customer_id, refresh_token, days=7, login_customer_id=Non
                 "spend": str(spend),
                 "account_name": customer.descriptive_name or f"Account {customer_id}",
                 "platform": "google",
+                "date_start": start_date,
+                "date_stop": end_date,
                 # Mimic Meta structure for frontend compatibility
                 "website_purchase_roas": [{"value": str(roas)}],
                 "action_values": [{"action_type": "conversions_value", "value": str(conv_value)}],
@@ -277,23 +279,27 @@ def fetch_for_customer(customer_id, refresh_token, days=7, login_customer_id=Non
             print(f"[{customer_id}]SDK Error fetching Google insights: {e}")
         return []
 
-def write_to_dynamodb(data, days):
+def write_to_dynamodb(data, days, integration_id=None):
     """
     Batch saves campaign analytics to the GoogleAdsInsights table.
     """
     if not data:
         return
     metrics_db.create_table(pk='campaign_id', sk='range_days', sk_type='N')
-    metrics_db.batch_write_campaign_metrics(data, days)
+    metrics_db.batch_write_campaign_metrics(data, days, integration_id=integration_id)
 
-def fetch_and_store(days: int = 7):
+def fetch_and_store(days: int = 7, integration_ids: list = None):
     """
-    Fetches data for all connected Google accounts and stores in DynamoDB.
+    Fetches data for connected Google accounts and stores in DynamoDB.
     """
-    integrations = integrations_db.list_integrations(platform="google")
+    if integration_ids:
+        all_google = integrations_db.list_integrations(platform="google")
+        integrations = [i for i in all_google if i.get('id') in integration_ids]
+    else:
+        integrations = integrations_db.list_integrations(platform="google")
     
     if not integrations:
-        print("No Google integrations found.")
+        print("No Google integrations found to sync.")
         return []
 
     print(f"GOOGLE SYNC: Starting fetch for {len(integrations)} integrations (Range: {days} days)")
@@ -353,7 +359,22 @@ def fetch_and_store(days: int = 7):
             
             if account_data:
                 print(f"GOOGLE SYNC: Found {len(account_data)} campaigns for CID {target_cid}. Writing to DB...")
-                write_to_dynamodb(account_data, days)
+                # We need the integration_id for this CID
+                # If we are in the target_obj loop, we might need to find the specific integration record
+                # However, for Google, sometimes we have one integration linked to many accounts.
+                # But our save_integration creates a separate record for each REAL CID.
+                # So we should look up the integration_id for target_cid.
+                
+                # Fetch integration to get its real ID
+                # (Standard cid vs discovered cid)
+                current_integration = None
+                integration_list = integrations_db.list_integrations(platform="google")
+                for item in integration_list:
+                    if item.get('account_id') == target_cid:
+                        current_integration = item
+                        break
+                
+                write_to_dynamodb(account_data, days, integration_id=current_integration.get('id') if current_integration else None)
                 all_results.extend(account_data)
                 
                 # Check if we need to update the account name (if it's generic)
@@ -381,11 +402,15 @@ def fetch_and_store(days: int = 7):
     print(f"GOOGLE SYNC COMPLETE: Total {len(all_results)} campaigns synced for {days} days.")
     return all_results
 
-def fetch_custom_range(start_date, end_date):
+def fetch_custom_range(start_date, end_date, integration_ids: list = None):
     """
-    Fetches data for all connected Google accounts for a custom date range.
+    Fetches data for specific Google accounts for a custom date range.
     """
-    integrations = integrations_db.list_integrations(platform="google")
+    if integration_ids:
+        all_google = integrations_db.list_integrations(platform="google")
+        integrations = [i for i in all_google if i.get('id') in integration_ids]
+    else:
+        integrations = integrations_db.list_integrations(platform="google")
     
     if not integrations:
         return []
@@ -431,15 +456,15 @@ def fetch_custom_range(start_date, end_date):
 
 import concurrent.futures
 
-def fetch_and_store_all():
+def fetch_and_store_all(integration_ids: list = None):
     """
     Syncs data for all 3 dashboard time ranges: 7, 30, and 180 days.
     """
-    print("Starting Google multi-range sync...")
+    print(f"Starting Google multi-range sync for {len(integration_ids) if integration_ids else 'all'} accounts...")
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         days_list = [7, 30, 180]
-        future_to_days = {executor.submit(fetch_and_store, days): days for days in days_list}
+        future_to_days = {executor.submit(fetch_and_store, days, integration_ids): days for days in days_list}
         
         for future in concurrent.futures.as_completed(future_to_days):
             days = future_to_days[future]
@@ -451,11 +476,18 @@ def fetch_and_store_all():
                 
     print("Full Google multi-range sync completed.")
 
-async def async_get_cached_insights(days: int = 7):
+async def async_get_cached_insights(days: int = 7, integration_ids: list = None):
     """
-    Asynchronously returns data from DynamoDB.
+    Asynchronously returns data from DynamoDB without hitting Google API.
+    If integration_ids is provided, it returns only data for those accounts.
     """
-    data = await metrics_db.async_read_campaign_metrics(days)
+    if integration_ids:
+        # Use the new granular index for isolation
+        data = await metrics_db.async_read_metrics_by_integrations(integration_ids, days)
+    else:
+        # Legacy/Global fallback
+        data = await metrics_db.async_read_campaign_metrics(days)
+        
     for row in data:
         if 'platform' not in row:
             row['platform'] = 'google'
