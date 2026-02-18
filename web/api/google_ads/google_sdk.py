@@ -301,7 +301,6 @@ def write_to_dynamodb(data, days, integration_id=None):
     """
     if not data:
         return
-    metrics_db.create_table(pk='campaign_id', sk='range_days', sk_type='N')
     metrics_db.batch_write_campaign_metrics(data, days, integration_id=integration_id)
 
 def fetch_and_store(days: int = 7, integration_ids: list = None):

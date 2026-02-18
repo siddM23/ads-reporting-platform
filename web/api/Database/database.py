@@ -134,16 +134,20 @@ class DynamoDB:
             try:
                 # We use the same persistent connection pattern as async_read_campaign_metrics
                 if self.async_table:
+                    # New Multi-Tenant Schema: Direct lookup by Table PK (integration_id)
+                    # This is the most efficient way to get isolated data.
+                    from boto3.dynamodb.conditions import Key, Attr
+                    
                     response = await self.async_table.query(
-                        IndexName='IntegrationRangeIndex',
-                        KeyConditionExpression=Key('integration_id').eq(str(integration_id)) & Key('range_days').eq(int(range_days))
+                        KeyConditionExpression=Key('integration_id').eq(str(integration_id)),
+                        FilterExpression=Attr('range_days').eq(int(range_days))
                     )
                     items.extend(response.get('Items', []))
                     
                     while 'LastEvaluatedKey' in response:
                         response = await self.async_table.query(
-                            IndexName='IntegrationRangeIndex',
-                            KeyConditionExpression=Key('integration_id').eq(str(integration_id)) & Key('range_days').eq(int(range_days)),
+                            KeyConditionExpression=Key('integration_id').eq(str(integration_id)),
+                            FilterExpression=Attr('range_days').eq(int(range_days)),
                             ExclusiveStartKey=response['LastEvaluatedKey']
                         )
                         items.extend(response.get('Items', []))
@@ -195,10 +199,12 @@ class DynamoDB:
             
             if self.async_table:
                 if user_id:
-                    # If we have a lot of items, a GSI would be better.
-                    # For now scan + filter on user_id
-                    filter_expr = filter_expr & Attr('user_id').eq(user_id)
-                    response = await self.async_table.scan(FilterExpression=filter_expr)
+                    # Use UserIdIndex GSI (Optimized)
+                    response = await self.async_table.query(
+                        IndexName='UserIdIndex',
+                        KeyConditionExpression=Key('user_id').eq(user_id),
+                        FilterExpression=filter_expr
+                    )
                 elif email:
                     # Use EmailIndex GSI
                     response = await self.async_table.query(
@@ -302,15 +308,19 @@ class DynamoDB:
         import datetime
         import time
         
+        # New Schema: PK=integration_id, SK=campaign_id#range_days
+        if not integration_id:
+            print(f"Error: integration_id is REQUIRED for {self.table_name}")
+            return False
+
         item = {
+            'integration_id': str(integration_id),
+            'campaign_id_range': f"{campaign_id}#{range_days}",
             'campaign_id': str(campaign_id),
             'range_days': int(range_days),
             'last_synced': datetime.datetime.utcnow().isoformat(),
             **metrics
         }
-        
-        if integration_id:
-            item['integration_id'] = str(integration_id)
         
         for attempt in range(5):
             try:
@@ -348,18 +358,19 @@ class DynamoDB:
                 # Remove ID from metrics dict to avoid duplication if it's there
                 metrics = {k: v for k, v in campaign.items() if k != "campaign_id"}
                 
+                # New Schema: integration_id is PK
+                final_integration_id = integration_id or campaign.get('integration_id')
+                if not final_integration_id:
+                    continue
+
                 item = {
+                    'integration_id': str(final_integration_id),
+                    'campaign_id_range': f"{c_id}#{range_days}",
                     'campaign_id': str(c_id),
                     'range_days': int(range_days),
                     'last_synced': timestamp,
                     **metrics
                 }
-                
-                if integration_id:
-                    item['integration_id'] = str(integration_id)
-                elif 'integration_id' in campaign:
-                    # Allow it to be passed inside the campaign dict too
-                    item['integration_id'] = str(campaign['integration_id'])
                 
                 items.append(item)
         
@@ -738,6 +749,17 @@ class DynamoDB:
                         'ProvisionedThroughput': {'ReadCapacityUnits': 5, 'WriteCapacityUnits': 5}
                     }
                 })
+
+            # 3. UserIdIndex (PK=user_id)
+            if 'UserIdIndex' not in existing_gsis:
+                updates.append({
+                    'Create': {
+                        'IndexName': 'UserIdIndex',
+                        'KeySchema': [{'AttributeName': 'user_id', 'KeyType': 'HASH'}],
+                        'Projection': {'ProjectionType': 'ALL'},
+                        'ProvisionedThroughput': {'ReadCapacityUnits': 5, 'WriteCapacityUnits': 5}
+                    }
+                })
                 
             if not updates:
                 print("GSIs already exist.")
@@ -857,14 +879,14 @@ class DynamoDB:
             self.table.update(
                 AttributeDefinitions=[
                     {'AttributeName': 'range_days', 'AttributeType': 'N'},
-                    {'AttributeName': 'campaign_id', 'AttributeType': 'S'}
+                    {'AttributeName': 'campaign_id_range', 'AttributeType': 'S'}
                 ],
                 GlobalSecondaryIndexUpdates=[{
                     'Create': {
                         'IndexName': 'RangeDaysIndex',
                         'KeySchema': [
                             {'AttributeName': 'range_days', 'KeyType': 'HASH'},
-                            {'AttributeName': 'campaign_id', 'KeyType': 'RANGE'}
+                            {'AttributeName': 'campaign_id_range', 'KeyType': 'RANGE'}
                         ],
                         'Projection': {'ProjectionType': 'ALL'},
                         'ProvisionedThroughput': {

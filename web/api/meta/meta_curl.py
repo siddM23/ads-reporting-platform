@@ -114,9 +114,7 @@ def write_to_dynamodb(data, days, integration_id=None):
     """
     if not data:
         return
-    # Ensure the metrics table exists before writing
-    metrics_db.create_table(pk='campaign_id', sk='range_days', sk_type='N')
-    # Use batch write for efficiency
+    # Batch write for efficiency
     metrics_db.batch_write_campaign_metrics(data, days, integration_id=integration_id)
 
 def fetch_and_store(days: int = 7, integration_ids: list = None):
