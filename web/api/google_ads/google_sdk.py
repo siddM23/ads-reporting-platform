@@ -308,14 +308,18 @@ def fetch_and_store(days: int = 7, integration_ids: list = None):
     """
     Fetches data for connected Google accounts and stores in DynamoDB.
     """
-    if integration_ids:
+    if integration_ids is not None:
+        # STRICT ISOLATION: If an empty list of IDs is provided, do nothing.
+        if not integration_ids:
+            return []
+            
         all_google = integrations_db.list_integrations(platform="google")
         integrations = [i for i in all_google if i.get('id') in integration_ids]
     else:
+        # GLOBAL FALLBACK: Only if specifically requested via None
         integrations = integrations_db.list_integrations(platform="google")
     
     if not integrations:
-        print("No Google integrations found to sync.")
         return []
 
     print(f"GOOGLE SYNC: Starting fetch for {len(integrations)} integrations (Range: {days} days)")

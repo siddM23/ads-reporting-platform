@@ -599,8 +599,9 @@ async def meta_callback(code: str, background_tasks: BackgroundTasks, state: Opt
     user_email = user_info.get("email", "N/A")
 
     saved_count = 0
+    newly_saved_ids = []
     for acc in accounts:
-        success = integrations_db.save_integration(
+        success_id = integrations_db.save_integration(
             platform="meta",
             account_id=acc["account_id"],
             account_name=acc.get("name", f"Meta Account {acc['account_id']}"),
@@ -612,13 +613,14 @@ async def meta_callback(code: str, background_tasks: BackgroundTasks, state: Opt
             user_id=initiating_user_id
         )
 
-        if success:
+        if success_id:
             saved_count += 1
+            newly_saved_ids.append(success_id)
 
-    # 5. Immediate sync for the new accounts in background
-    if saved_count > 0:
-        background_tasks.add_task(fetch_and_store_all)
-        print(f"META OAUTH: Added background sync task for {saved_count} accounts")
+    # 5. Immediate sync ONLY for the newly added accounts
+    if newly_saved_ids:
+        background_tasks.add_task(fetch_and_store_all, newly_saved_ids)
+        print(f"META OAUTH: Added background sync task for {len(newly_saved_ids)} accounts")
 
     # Redirect back to the frontend
     return RedirectResponse(url=f"{FRONTEND_URL}/integrations?success=true&platform=meta")
@@ -705,10 +707,11 @@ async def google_callback(code: str, background_tasks: BackgroundTasks, state: O
         customer_accounts = [{'id': user_email, 'name': f"Google Account ({user_email})"}]
 
     saved_count = 0
+    newly_saved_ids = []
     for account in customer_accounts:
         cid = account['id']
         name = account['name']
-        success = integrations_db.save_integration(
+        success_id = integrations_db.save_integration(
             platform="google",
             account_id=cid,
             account_name=name,
@@ -719,14 +722,15 @@ async def google_callback(code: str, background_tasks: BackgroundTasks, state: O
             user_id=initiating_user_id
             # Google refresh tokens don't strictly expire, so we don't set access_token_expires_at
         )
-        if success:
+        if success_id:
             saved_count += 1
+            newly_saved_ids.append(success_id)
             print(f"GOOGLE OAUTH: Successfully saved integration for {cid}")
 
-    if saved_count > 0:
-        # 4. Trigger asynchronous sync
-        background_tasks.add_task(fetch_google_all)
-        print(f"GOOGLE OAUTH: Added background sync task for {saved_count} accounts")
+    if newly_saved_ids:
+        # 4. Trigger asynchronous sync ONLY for these accounts
+        background_tasks.add_task(fetch_google_all, newly_saved_ids)
+        print(f"GOOGLE OAUTH: Added background sync task for {len(newly_saved_ids)} accounts")
     else:
         print(f"GOOGLE OAUTH: FAILED to save any integrations for {user_email}")
 
