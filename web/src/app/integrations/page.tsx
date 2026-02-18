@@ -1,10 +1,12 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Plus, X, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
+import { Plus, X, CheckCircle2, AlertCircle } from "lucide-react";
 import Image from "next/image";
 import { cn } from "@/lib/utils";
 import { authFetch } from "@/lib/auth-context";
+import { Badge } from "@/components/ui/badge";
+import { Spinner } from "@/components/ui/spinner";
 
 interface PlatformCardProps {
     title: string;
@@ -227,7 +229,12 @@ export default function IntegrationsPage() {
             <div className="mb-8 border-b border-slate-100 pb-8 flex items-center justify-between">
                 <div className="flex items-center gap-4">
                     <h1 className="text-3xl font-bold text-slate-900">Integrations</h1>
-                    {isLoading && <Loader2 className="animate-spin text-slate-400" size={20} />}
+                    {isLoading && (
+                        <Badge className="gap-2 bg-indigo-50 text-indigo-600 border-indigo-100 hover:bg-indigo-50">
+                            <Spinner size={12} className="text-indigo-600" />
+                            Syncing
+                        </Badge>
+                    )}
                 </div>
             </div>
 

@@ -6,6 +6,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { authFetch, useAuth } from "@/lib/auth-context";
 import { DateFilter } from "@/components/ui/date-filter";
+import { Badge } from "@/components/ui/badge";
+import { Spinner } from "@/components/ui/spinner";
 
 import { format } from "date-fns";
 
@@ -547,7 +549,21 @@ export default function DashPage() {
 
             <div className="mb-8 flex justify-between items-end">
                 <div>
-                    <h1 className="text-3xl font-bold text-slate-900 mb-2">Portfolio Performance</h1>
+                    <div className="flex items-center gap-4 mb-2">
+                        <h1 className="text-3xl font-bold text-slate-900">Portfolio Performance</h1>
+                        {isSyncing && (
+                            <Badge className="gap-2 bg-indigo-50 text-indigo-600 border-indigo-100 hover:bg-indigo-50">
+                                <Spinner size={12} className="text-indigo-600" />
+                                Processing
+                            </Badge>
+                        )}
+                        {isDataLoading && (
+                            <Badge className="gap-2 bg-indigo-50 text-indigo-600 border-indigo-100 hover:bg-indigo-50">
+                                <Spinner size={12} className="text-indigo-600" />
+                                Syncing
+                            </Badge>
+                        )}
+                    </div>
                     <p className="text-slate-500">Track and analyze your ad campaign performance across platforms</p>
                 </div>
                 <div className="flex items-center gap-3">
