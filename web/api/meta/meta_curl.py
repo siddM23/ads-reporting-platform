@@ -71,9 +71,41 @@ def fetch_for_account(account_id, token, days=7, start_date=None, end_date=None)
         return data
 
     except Exception as e:
-        # Print detailed error if it's a request error
+        is_auth_error = False
+        error_msg = str(e)
+        
+        # Check for 401/403 or specific Meta error codes
         if isinstance(e, requests.exceptions.HTTPError):
-            print(f"[{account_id}] Meta API Error: {e.response.text}")
+            try:
+                error_data = e.response.json().get('error', {})
+                code = error_data.get('code')
+                subcode = error_data.get('error_subcode')
+                message = error_data.get('message', '')
+                
+                # Meta Error 190: Access Token Expired
+                # 401: Unauthorized
+                if r.status_code == 401 or code == 190:
+                    is_auth_error = True
+                    error_msg = f"Meta Auth Error {code}: {message}"
+                    print(f"[{account_id}] META AUTH INVALID: {message}")
+                else:
+                    print(f"[{account_id}] Meta API Error: {message}")
+            except:
+                print(f"[{account_id}] Meta API Error: {e.response.text}")
+
+        if is_auth_error:
+             integrations_db.update_integration_status(
+                platform="meta",
+                account_id=account_id.replace('act_', ''), # DB stores ID without prefix usually? Let's check. 
+                # Actually DB stores what we get from /me/adaccounts. On entry.py line 497 we store acc['account_id'].
+                # Meta usually provides raw numbers there. fetch_for_account receives 'act_' prefixed or raw.
+                # We need to ensure we use the same ID format as stored in DB.
+                # database.py save_integration calls str(account_id).
+                # fetch_for_account takes account_id.
+                # We should strip act_ just in case to match DB key.
+                needs_reauth=True,
+                error_message=error_msg
+            )
         else:
             print(f"[{account_id}] Error fetching Meta insights: {e}")
         return []

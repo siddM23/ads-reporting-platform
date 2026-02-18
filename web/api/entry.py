@@ -1,6 +1,7 @@
 import os
 import sys
 import asyncio # Added for asyncio.gather
+import datetime
 
 # Ensure the current directory is in the path for finding siblings like 'meta', 'google', 'Database'
 sys.path.append(os.path.dirname(__file__))
@@ -304,8 +305,29 @@ async def get_integrations(user: dict = Depends(get_current_user)):
     if integrations_db is None:
         print("DEBUG: integrations_db is NONE, re-initializing...")
         init_db_logic()
-    # Return all connected accounts
-    results = await integrations_db.async_list_integrations()
+    # Return all connected accounts for the current user
+    user_email = user.get("email")
+    user_id = user.get("user_id")
+    
+    # We prefer filtering by user_id if available, but fallback to email for legacy
+    # Note: async_list_integrations currently supports email filter. We should probably update it to support user_id too.
+    # For now, let's just stick to email as we populate both user_id and email in Integrations.
+    # But wait, user_id is safer.
+    
+    # Let's inspect async_list_integrations signature... it takes email.
+    # We should update it to take user_id as well, or just filter in memory if small list?
+    # Better: Update async_list_integrations to filter by user_id if provided.
+    
+    # Updated to filter by user_id if available, falling back to email
+    if user_id:
+        results = await integrations_db.async_list_integrations(user_id=user_id)
+    else:
+        results = await integrations_db.async_list_integrations(email=user_email)
+    
+    # Optional: Filter by user_id if we decide to rely on that strictly in future
+    # if user_id:
+    #    results = [r for r in results if r.get('user_id') == user_id]
+        
     for res in results:
         # Fallback for older records missing account_name
         if 'account_name' not in res:
@@ -318,11 +340,19 @@ async def get_integrations(user: dict = Depends(get_current_user)):
 
 @app.post("/api/integrations")
 async def add_integration(req: IntegrationRequest, user: dict = Depends(get_current_user)):
+    user_id = user.get("user_id")
+    # If using legacy token without user_id, we might need to fetch it?
+    # Assuming token has it. If not, we could fetch user by email.
+    if not user_id:
+        u = await users_db.async_get_user(user.get("email"))
+        if u: user_id = u.get('id')
+
     success = integrations_db.save_integration(
         platform=req.platform,
         account_id=req.account_id,
         email=req.email,
-        access_token=encrypt_token(req.access_token)
+        access_token=encrypt_token(req.access_token),
+        user_id=user_id
     )
 
     if not success:
@@ -347,25 +377,21 @@ async def delete_integration(platform: str, account_id: str, user: dict = Depend
 
 @app.post("/api/auth/register")
 async def register(req: UserAuthRequest):
-    # Check if user exists
-    # DynamoDB.table.get_item(Key={'email': req.email})
     try:
-        from boto3.dynamodb.conditions import Key
-        response = await users_db.async_query(KeyConditionExpression=Key('email').eq(req.email))
-        if response.get('Items'):
+        # Check if user exists first to give correct error code
+        existing_user = await users_db.async_get_user(req.email)
+        if existing_user:
             raise HTTPException(status_code=400, detail="Email already registered")
+
+        success_user_id = await users_db.async_create_user(req.email, get_password_hash(req.password))
         
-        import datetime
-        timestamp = datetime.datetime.utcnow().isoformat()
-        
-        await users_db.async_put_item(Item={
-            'email': req.email,
-            'password_hash': get_password_hash(req.password),
-            'created_at': timestamp
-        })
-        
-        token = create_access_token({"email": req.email})
+        if not success_user_id:
+             raise HTTPException(status_code=500, detail="Failed to create user")
+
+        token = create_access_token({"email": req.email, "user_id": success_user_id})
         return AuthResponse(access_token=token, email=req.email)
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Registration error: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error during registration")
@@ -373,18 +399,12 @@ async def register(req: UserAuthRequest):
 @app.post("/api/auth/login")
 async def login(req: UserAuthRequest):
     try:
-        from boto3.dynamodb.conditions import Key
-        response = await users_db.async_query(KeyConditionExpression=Key('email').eq(req.email))
-        items = response.get('Items', [])
+        user = await users_db.async_get_user(req.email)
         
-        if not items:
+        if not user or not verify_password(req.password, user.get('password_hash', '')):
             raise HTTPException(status_code=401, detail="Invalid email or password")
         
-        user = items[0]
-        if not verify_password(req.password, user['password_hash']):
-            raise HTTPException(status_code=401, detail="Invalid email or password")
-        
-        token = create_access_token({"email": req.email})
+        token = create_access_token({"email": req.email, "user_id": user.get('id')})
         # Return user preferences if they exist
         preferences = user.get('preferences', {})
         return AuthResponse(access_token=token, email=req.email, preferences=preferences)
@@ -403,52 +423,60 @@ async def update_preferences(prefs: UserPreferences, user: dict = Depends(get_cu
         if not user_email:
             raise HTTPException(status_code=400, detail="User email not found")
 
-        # Read user first
-        from boto3.dynamodb.conditions import Key
-        response = await users_db.async_query(KeyConditionExpression=Key('email').eq(user_email))
-        items = response.get('Items', [])
-        
-        if not items:
-             raise HTTPException(status_code=404, detail="User not found")
-        
-        current_user = items[0]
-        current_prefs = current_user.get('preferences', {}) or {}
-        
+        updates = {}
         if prefs.custom_range:
-            current_prefs['custom_range'] = prefs.custom_range
+            updates['custom_range'] = prefs.custom_range
         if prefs.selected_label:
-            current_prefs['selected_label'] = prefs.selected_label
+            updates['selected_label'] = prefs.selected_label
             
-        current_user['preferences'] = current_prefs
+        updated_prefs = await users_db.async_update_user_preferences(user_email, updates)
         
-        # Save back the full item
-        await users_db.async_put_item(Item=current_user)
+        if updated_prefs is None:
+             raise HTTPException(status_code=404, detail="User not found or update failed")
         
-        return {"message": "Preferences updated", "preferences": current_prefs}
+        return {"message": "Preferences updated", "preferences": updated_prefs}
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Update preferences error: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 @app.get("/api/auth/meta/login")
-def meta_login():
+def meta_login(user_id: Optional[str] = Query(None)):
     """Redirects to Facebook OAuth Dialog"""
     if not META_CLIENT_ID:
         raise HTTPException(status_code=500, detail="META_CLIENT_ID not configured")
     
     # Business apps need real permissions to trigger the dialog
     scope = "email,ads_read"
+    
+    # Pass user_id in state if present
+    state = f"user_id={user_id}" if user_id else ""
+    
     # Use safe='' to encode EVERYTHING including // and :
     encoded_uri = urllib.parse.quote(META_REDIRECT_URI, safe='')
-    url = f"https://www.facebook.com/v21.0/dialog/oauth?client_id={META_CLIENT_ID}&redirect_uri={encoded_uri}&scope={scope}"
+    url = f"https://www.facebook.com/v21.0/dialog/oauth?client_id={META_CLIENT_ID}&redirect_uri={encoded_uri}&scope={scope}&state={state}"
     print(f"DEBUG: Generated Meta OAuth URL: {url}")
     return {"url": url}
 
 from fastapi.responses import RedirectResponse
 
 @app.get("/api/auth/meta/callback")
-async def meta_callback(code: str, background_tasks: BackgroundTasks):
+async def meta_callback(code: str, background_tasks: BackgroundTasks, state: Optional[str] = None):
     """Handles OAuth callback and exchanges code for long-lived token"""
     if not code:
         raise HTTPException(status_code=400, detail="Code not provided")
+
+    # Extract user_id from state
+    initiating_user_id = None
+    if state and "user_id=" in state:
+        try:
+            # Simple parsing for now "user_id=XYZ"
+            parts = state.split("user_id=")
+            if len(parts) > 1:
+                initiating_user_id = parts[1]
+                print(f"META OAUTH: Linking to user_id {initiating_user_id}")
+        except Exception as e:
+            print(f"Error parsing state: {e}")
 
     # 1. Exchange code for short-lived token
     token_url = "https://graph.facebook.com/v24.0/oauth/access_token"
@@ -497,8 +525,13 @@ async def meta_callback(code: str, background_tasks: BackgroundTasks):
             account_id=acc["account_id"],
             account_name=acc.get("name", f"Meta Account {acc['account_id']}"),
             email=user_email,
-            access_token=encrypt_token(long_token)
+            access_token=encrypt_token(long_token),
+            needs_reauth=False,
+            # Meta long-lived tokens expire in ~60 days
+            access_token_expires_at=(datetime.datetime.utcnow() + datetime.timedelta(days=60)).isoformat(),
+            user_id=initiating_user_id
         )
+
         if success:
             saved_count += 1
 
@@ -511,11 +544,14 @@ async def meta_callback(code: str, background_tasks: BackgroundTasks):
     return RedirectResponse(url=f"{FRONTEND_URL}/integrations?success=true&platform=meta")
 
 @app.get("/api/auth/google/login")
-def google_login():
+def google_login(user_id: Optional[str] = Query(None)):
     """Redirects to Google OAuth Dialog"""
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=500, detail="GOOGLE_CLIENT_ID not configured")
     
+    # Pass user_id in state if present
+    state = f"user_id={user_id}" if user_id else ""
+
     # Scopes for Google Ads and email
     scope = "https://www.googleapis.com/auth/adwords email openid"
     params = {
@@ -524,7 +560,8 @@ def google_login():
         "response_type": "code",
         "scope": scope,
         "access_type": "offline",
-        "prompt": "consent"
+        "prompt": "consent",
+        "state": state
     }
     encoded_params = urllib.parse.urlencode(params)
     url = f"https://accounts.google.com/o/oauth2/v2/auth?{encoded_params}"
@@ -532,10 +569,21 @@ def google_login():
     return {"url": url}
 
 @app.get("/api/auth/google/callback")
-async def google_callback(code: str, background_tasks: BackgroundTasks):
+async def google_callback(code: str, background_tasks: BackgroundTasks, state: Optional[str] = None):
     """Handles Google OAuth callback and exchanges code for tokens"""
     if not code:
         raise HTTPException(status_code=400, detail="Code not provided")
+
+    # Extract user_id from state
+    initiating_user_id = None
+    if state and "user_id=" in state:
+        try:
+            parts = state.split("user_id=")
+            if len(parts) > 1:
+                initiating_user_id = parts[1]
+                print(f"GOOGLE OAUTH: Linking to user_id {initiating_user_id}")
+        except Exception as e:
+            print(f"Error parsing state: {e}")
 
     # 1. Exchange code for tokens
     token_url = "https://oauth2.googleapis.com/token"
@@ -583,7 +631,11 @@ async def google_callback(code: str, background_tasks: BackgroundTasks):
             account_id=cid,
             account_name=name,
             email=user_email,
-            access_token=encrypt_token(refresh_token or access_token)
+            access_token=encrypt_token(refresh_token or access_token),
+            needs_reauth=False,
+            last_token_refresh_at=datetime.datetime.utcnow().isoformat(),
+            user_id=initiating_user_id
+            # Google refresh tokens don't strictly expire, so we don't set access_token_expires_at
         )
         if success:
             saved_count += 1

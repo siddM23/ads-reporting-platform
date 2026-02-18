@@ -234,6 +234,21 @@ def fetch_for_customer(customer_id, refresh_token, days=7, login_customer_id=Non
             print(f"[{customer_id}]Solution: Use a Google Ads Test Manager account or apply for 'Basic Access' in the Google Ads API Center.")
         elif "PERMISSION_DENIED" in error_str:
             print(f"[{customer_id}]GOOGLE ADS ERROR: Permission Denied. Ensure the authenticated user has access to account {customer_id}.")
+            # This might be a user removal, so we flag reauth
+            integrations_db.update_integration_status(
+                platform="google",
+                account_id=customer_id,
+                needs_reauth=True,
+                error_message="Permission Denied"
+            )
+        elif "invalid_grant" in error_str or "unauthorized_client" in error_str:
+            print(f"[{customer_id}] GOOGLE AUTH ERROR: Refresh token invalid or revoked.")
+            integrations_db.update_integration_status(
+                platform="google",
+                account_id=customer_id,
+                needs_reauth=True,
+                error_message="Invalid Refresh Token"
+            )
         elif "REQUESTED_METRICS_FOR_MANAGER" in error_str or "Metrics cannot be requested for a manager account" in error_str:
             print(f"[{customer_id}] GOOGLE ADS INFO: Account {customer_id} is a Manager Account. Fetching sub-accounts...")
             try:

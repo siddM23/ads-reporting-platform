@@ -488,8 +488,41 @@ export default function DashPage() {
         }, 32000);
     };
 
+    // Fetch Integrations to check for re-auth needed
+    const { data: brokenIntegrations } = useQuery({
+        queryKey: ["broken-integrations"],
+        queryFn: async () => {
+            const res = await authFetch(`${API_URL}/integrations`);
+            if (!res.ok) return [];
+            const data = await res.json();
+            return Array.isArray(data) ? data.filter((acc: any) => acc.needs_reauth) : [];
+        },
+    });
+
     return (
         <div className="p-8">
+            {brokenIntegrations && brokenIntegrations.length > 0 && (
+                <div className="mb-8 bg-red-50 border border-red-200 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-red-100 text-red-600 rounded-full flex items-center justify-center shrink-0">
+                            <AlertCircle size={20} />
+                        </div>
+                        <div>
+                            <h3 className="text-sm font-bold text-red-900">Action Required</h3>
+                            <p className="text-sm text-red-700">
+                                {brokenIntegrations.length} {brokenIntegrations.length === 1 ? "account needs" : "accounts need"} re-authentication to continue syncing data.
+                            </p>
+                        </div>
+                    </div>
+                    <a
+                        href="/integrations"
+                        className="px-4 py-2 bg-red-600 text-white text-sm font-bold rounded-xl hover:bg-red-700 transition-colors shadow-md shadow-red-200 whitespace-nowrap"
+                    >
+                        Resolving Issues
+                    </a>
+                </div>
+            )}
+
             {/* Header Tabs - Hidden when only one platform */}
             {platforms.length > 1 && (
                 <div className="flex justify-center mb-8">
