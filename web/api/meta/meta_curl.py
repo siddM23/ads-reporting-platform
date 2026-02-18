@@ -61,12 +61,29 @@ def fetch_for_account(account_id, token, days=7, start_date=None, end_date=None)
             "limit": 500  # Fetch more rows per page
         }
 
-        r = requests.get(url, params=params)
-        r.raise_for_status()
+        all_data = []
         
-        data = r.json().get("data", [])
-        print(f"[{account_id}] Successfully fetched {len(data)} campaign rows.")
-        return data
+        while True:
+            r = requests.get(url, params=params)
+            r.raise_for_status()
+            
+            res_json = r.json()
+            data = res_json.get("data", [])
+            all_data.extend(data)
+            
+            # Check for next page
+            paging = res_json.get("paging", {})
+            next_url = paging.get("next")
+            
+            if not next_url:
+                break
+                
+            # Update url and remove params since next_url already contains them
+            url = next_url
+            params = {}
+
+        print(f"[{account_id}] Successfully fetched {len(all_data)} total campaign rows across all pages.")
+        return all_data
 
     except Exception as e:
         is_auth_error = False

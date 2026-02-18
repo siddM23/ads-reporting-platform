@@ -135,19 +135,19 @@ class DynamoDB:
                 # We use the same persistent connection pattern as async_read_campaign_metrics
                 if self.async_table:
                     # New Multi-Tenant Schema: Direct lookup by Table PK (integration_id)
-                    # This is the most efficient way to get isolated data.
-                    from boto3.dynamodb.conditions import Key, Attr
+                    # We use IntegrationRangeIndex to efficiently filter by integration_id and range_days
+                    from boto3.dynamodb.conditions import Key
                     
                     response = await self.async_table.query(
-                        KeyConditionExpression=Key('integration_id').eq(str(integration_id)),
-                        FilterExpression=Attr('range_days').eq(int(range_days))
+                        IndexName='IntegrationRangeIndex',
+                        KeyConditionExpression=Key('integration_id').eq(str(integration_id)) & Key('range_days').eq(int(range_days))
                     )
                     items.extend(response.get('Items', []))
                     
                     while 'LastEvaluatedKey' in response:
                         response = await self.async_table.query(
-                            KeyConditionExpression=Key('integration_id').eq(str(integration_id)),
-                            FilterExpression=Attr('range_days').eq(int(range_days)),
+                            IndexName='IntegrationRangeIndex',
+                            KeyConditionExpression=Key('integration_id').eq(str(integration_id)) & Key('range_days').eq(int(range_days)),
                             ExclusiveStartKey=response['LastEvaluatedKey']
                         )
                         items.extend(response.get('Items', []))
