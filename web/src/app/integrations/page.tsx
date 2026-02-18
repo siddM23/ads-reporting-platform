@@ -103,66 +103,149 @@ const PlatformCard: React.FC<PlatformCardProps> = ({
     );
 };
 
-// ... const API_URL ...
+export default function IntegrationsPage() {
+    const [connectedAccounts, setConnectedAccounts] = useState<any[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
 
-// ... export default function IntegrationsPage() ...
-// ...
-const filterAccounts = (platform: string) => {
-    const accounts = Array.isArray(connectedAccounts) ? connectedAccounts : [];
-    return accounts
-        .filter(a => a?.platform?.toLowerCase() === platform.toLowerCase())
-        .map(a => ({
-            email: a.email,
-            status: a.status as "Active" | "Inactive",
-            account_id: a.account_id,
-            account_name: a.account_name || a.account_id,
-            needs_reauth: a.needs_reauth
-        }));
-};
+    const fetchIntegrations = async () => {
+        setIsLoading(true);
+        try {
+            const res = await authFetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/integrations`);
+            if (res.ok) {
+                const data = await res.json();
+                setConnectedAccounts(data);
+            }
+        } catch (error) {
+            console.error("Failed to fetch integrations", error);
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
-const platforms = [
-    {
-        id: "google",
-        title: "Google Ads",
-        description: "Connect your Google Ads accounts",
-        icon: <Image src="/google.png" alt="Google Ads" width={28} height={28} className="object-contain" />,
-        accentColor: "bg-white",
-        onConnect: handleConnectGoogle
-    },
-    {
-        id: "meta",
-        title: "Meta Ads",
-        description: "Connect your Meta Ads accounts",
-        icon: <Image src="/facebook.png" alt="Meta Ads" width={28} height={28} className="object-contain" />,
-        accentColor: "bg-white",
-        onConnect: handleConnectMeta
-    }
-];
+    useEffect(() => {
+        fetchIntegrations();
 
-return (
-    <div className="p-8">
-        <div className="mb-8 border-b border-slate-100 pb-8 flex items-center justify-between">
-            <div className="flex items-center gap-4">
-                <h1 className="text-3xl font-bold text-slate-900">Integrations</h1>
-                {isLoading && <Loader2 className="animate-spin text-slate-400" size={20} />}
+        // Listen for success params
+        if (typeof window !== "undefined") {
+            const params = new URLSearchParams(window.location.search);
+            if (params.get("success") === "true") {
+                // Clear URL params
+                window.history.replaceState({}, "", "/integrations");
+                fetchIntegrations();
+            }
+        }
+    }, []);
+
+    const handleConnectGoogle = async () => {
+        // Need current user ID to pass in state
+        // We can create a dedicated endpoint to get the OAuth URL which handles user linkage via session/token
+        // Or assume the backend handles it via 'state' if we initiate it.
+        // For now, let's fetch the URL from backend
+        try {
+            // Get user ID from local storage or context if available? 
+            // Better: Let backend extract user_id from token if we call an authenticated endpoint to get the URL.
+            // But currently the OAuth initiation endpoints are unauthenticated GETs usually?
+            // Wait, we updated them to accept 'user_id' query param!
+
+            // However, for security, the backend should ideally discern user from token.
+            // But since OAuth initiation is often a direct link...
+            // Let's call a protected endpoint to get the redirect URL
+
+            // For now, simply redirecting to the updated endpoint with user_id is tricky if we don't have user_id in frontend state easily accessible here without context.
+            // But authFetch handles the token.
+
+            // Let's call the endpoint using authFetch to get the URL
+            const res = await authFetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/auth/google/login`);
+            const data = await res.json();
+            if (data.url) window.location.href = data.url;
+        } catch (e) {
+            console.error("Error initiating Google login", e);
+        }
+    };
+
+    const handleConnectMeta = async () => {
+        try {
+            const res = await authFetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/auth/meta/login`);
+            const data = await res.json();
+            if (data.url) window.location.href = data.url;
+        } catch (e) {
+            console.error("Error initiating Meta login", e);
+        }
+    };
+
+    const handleDelete = async (platform: string, accountId: string) => {
+        if (!confirm("Are you sure you want to disconnect this account?")) return;
+
+        try {
+            const res = await authFetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/integrations/${platform}/${accountId}`, {
+                method: "DELETE"
+            });
+            if (res.ok) {
+                fetchIntegrations();
+            }
+        } catch (e) {
+            console.error("Error deleting integration", e);
+        }
+    };
+
+    const filterAccounts = (platform: string) => {
+        const accounts = Array.isArray(connectedAccounts) ? connectedAccounts : [];
+        return accounts
+            .filter(a => a?.platform?.toLowerCase() === platform.toLowerCase())
+            .map(a => ({
+                email: a.email,
+                status: a.status as "Active" | "Inactive",
+                account_id: a.account_id,
+                account_name: a.account_name || a.account_id,
+                needs_reauth: a.needs_reauth
+            }));
+    };
+
+    const platforms = [
+        {
+            id: "google",
+            title: "Google Ads",
+            description: "Connect your Google Ads accounts",
+            icon: <Image src="/google.png" alt="Google Ads" width={28} height={28} className="object-contain" />,
+            accentColor: "bg-white",
+            onConnect: handleConnectGoogle
+        },
+        {
+            id: "meta",
+            title: "Meta Ads",
+            description: "Connect your Meta Ads accounts",
+            icon: <Image src="/facebook.png" alt="Meta Ads" width={28} height={28} className="object-contain" />,
+            accentColor: "bg-gradient-to-br from-blue-600 to-blue-700",
+            onConnect: handleConnectMeta
+        }
+    ];
+
+    return (
+        <div className="p-8">
+            <div className="mb-8 border-b border-slate-100 pb-8 flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                    <h1 className="text-3xl font-bold text-slate-900">Integrations</h1>
+                    {isLoading && <Loader2 className="animate-spin text-slate-400" size={20} />}
+                </div>
+            </div>
+
+            <div className="mb-8">
+                <h2 className="text-2xl font-bold text-slate-900 mb-2">Platform Settings</h2>
+                <p className="text-slate-500">Manage your ad platform integrations</p>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                {platforms.map((platform) => (
+                    <PlatformCard
+                        key={platform.id}
+                        {...platform}
+                        accounts={filterAccounts(platform.id)}
+                        accentColor={platform.accentColor}
+                        onConnect={platform.onConnect}
+                        onDelete={handleDelete}
+                    />
+                ))}
             </div>
         </div>
-
-        <div className="mb-8">
-            <h2 className="text-2xl font-bold text-slate-900 mb-2">Platform Settings</h2>
-            <p className="text-slate-500">Manage your ad platform integrations</p>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            {platforms.map((platform) => (
-                <PlatformCard
-                    key={platform.id}
-                    {...platform}
-                    accounts={filterAccounts(platform.id)}
-                    onDelete={(accountId) => handleDelete(platform.id, accountId)}
-                />
-            ))}
-        </div>
-    </div>
-);
+    );
 }
