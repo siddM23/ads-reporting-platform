@@ -110,7 +110,7 @@ export default function IntegrationsPage() {
     const fetchIntegrations = async () => {
         setIsLoading(true);
         try {
-            const res = await authFetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/integrations`);
+            const res = await authFetch(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/integrations`);
             if (res.ok) {
                 const data = await res.json();
                 setConnectedAccounts(data);
@@ -155,7 +155,7 @@ export default function IntegrationsPage() {
             // But authFetch handles the token.
 
             // Let's call the endpoint using authFetch to get the URL
-            const res = await authFetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/auth/google/login`);
+            const res = await authFetch(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/auth/google/login`);
             const data = await res.json();
             if (data.url) window.location.href = data.url;
         } catch (e) {
@@ -165,7 +165,7 @@ export default function IntegrationsPage() {
 
     const handleConnectMeta = async () => {
         try {
-            const res = await authFetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/auth/meta/login`);
+            const res = await authFetch(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/auth/meta/login`);
             const data = await res.json();
             if (data.url) window.location.href = data.url;
         } catch (e) {
@@ -177,7 +177,7 @@ export default function IntegrationsPage() {
         if (!confirm("Are you sure you want to disconnect this account?")) return;
 
         try {
-            const res = await authFetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/integrations/${platform}/${accountId}`, {
+            const res = await authFetch(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/integrations/${platform}/${accountId}`, {
                 method: "DELETE"
             });
             if (res.ok) {
