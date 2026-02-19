@@ -1,3 +1,4 @@
+//A component that combines a calendar and popover to allow users to filter data by timeframes.
 "use client"
 
 import * as React from "react"

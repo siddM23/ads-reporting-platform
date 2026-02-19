@@ -9,3 +9,5 @@ dist/
 build/
 .DS_Store
 cred/*.json
+users_backup.json
+integrations_backup.json

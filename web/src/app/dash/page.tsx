@@ -21,7 +21,10 @@ interface MetricRowProps {
         last7?: { spend: string; roas: string; rev: string; res: string; cac: string };
         prevMonth?: { spend: string; roas: string; rev: string; res: string; cac: string };
         sixMonth?: { spend: string; roas: string; rev: string; res: string; cac: string };
-        custom?: { spend: string; roas: string; rev: string; res: string; cac: string };
+        custom?: {
+            spend: string; roas: string; rev: string; res: string; cac: string;
+            deltas?: { spend: string; roas: string; rev: string; res: string; cac: string };
+        };
     };
     selectedRange?: string;
 }
@@ -43,21 +46,53 @@ const MetricRow: React.FC<MetricRowProps> = ({
     const showCustom = selectedRange === "Custom";
 
     // Reusable cell renderer for consistent styling
-    const renderCell = (value: string, type: 'text' | 'roas' | 'cac' | 'currency' | 'number', isLight = false) => {
+    const renderCell = (value: string, type: 'text' | 'roas' | 'cac' | 'currency' | 'number', isLight = false, delta?: string) => {
         let content: React.ReactNode = value;
         let className = "py-4 px-4 text-center text-sm font-medium text-slate-900";
+
+
+
+
+        // Helper for delta styling
+        const renderDelta = () => {
+            if (!delta || delta === '—') return null;
+            const isPos = delta.startsWith('+');
+            const absDelta = delta.substring(1); // Remove sign
+            const isBad = type === 'cac' ? isPos : !isPos;
+
+            const colorClass = isBad ? "text-rose-500" : "text-emerald-500";
+            const Arrow = isPos ? '▲' : '▼';
+
+            return (
+                <span className={cn(
+                    "absolute left-1 text-[8px] font-bold flex items-center gap-0.5 whitespace-nowrap",
+                    colorClass
+                )}>
+                    {Arrow}{absDelta}
+                </span>
+            );
+        };
+
+        const CellContent = ({ children }: { children: React.ReactNode }) => (
+            <div className="relative flex items-center justify-center w-full min-h-[28px] px-14">
+                {renderDelta()}
+                {children}
+            </div>
+        );
 
         if (type === 'roas') {
             const numVal = parseFloat(value);
             const isBad = !isNaN(numVal) && numVal < 1;
             return (
                 <td className="py-4 px-4 text-center text-sm font-medium">
-                    <span className={cn(
-                        "px-2 py-1 rounded-lg text-[13px] font-bold",
-                        isBad ? "text-red-500 bg-red-50" : "text-slate-900"
-                    )}>
-                        {value}
-                    </span>
+                    <CellContent>
+                        <span className={cn(
+                            "px-2 py-1 rounded-lg text-[13px] font-bold",
+                            isBad ? "text-red-500 bg-red-50" : "text-slate-900"
+                        )}>
+                            {value}
+                        </span>
+                    </CellContent>
                 </td>
             );
         }
@@ -65,9 +100,11 @@ const MetricRow: React.FC<MetricRowProps> = ({
         if (type === 'cac') {
             return (
                 <td className="py-4 px-4 text-center text-sm font-medium border-r border-slate-100/50">
-                    <span className="px-2 py-1 rounded-lg text-[13px] font-bold text-slate-900">
-                        {value}
-                    </span>
+                    <CellContent>
+                        <span className="px-2 py-1 rounded-lg text-[13px] font-bold text-slate-900">
+                            {value}
+                        </span>
+                    </CellContent>
                 </td>
             );
         }
@@ -76,7 +113,11 @@ const MetricRow: React.FC<MetricRowProps> = ({
             className += " text-slate-400 font-light";
         }
 
-        return <td className={className}>{content}</td>;
+        return (
+            <td className={className}>
+                <CellContent>{content}</CellContent>
+            </td>
+        );
     };
 
     return (
@@ -99,9 +140,13 @@ const MetricRow: React.FC<MetricRowProps> = ({
                             <div className="h-[1px] w-4 bg-slate-200" />
                         </div>
                     )}
-                    <span className={cn(
-                        isCampaign ? "text-sm text-slate-600 font-medium" : "text-[14px] text-slate-900 font-semibold",
-                    )}>
+                    <span 
+                        className={cn(
+                            isCampaign ? "text-sm text-slate-600 font-medium" : "text-[14px] text-slate-900 font-semibold",
+                            "max-w-[240px] break-words leading-snug"
+                        )}
+                        title={label}
+                    >
                         {label}
                     </span>
                 </div>
@@ -110,11 +155,11 @@ const MetricRow: React.FC<MetricRowProps> = ({
             {/* Custom Range */}
             {showCustom && metrics.custom && (
                 <>
-                    {renderCell(metrics.custom.spend, 'currency')}
-                    {renderCell(metrics.custom.roas, 'roas')}
-                    {renderCell(metrics.custom.rev, 'currency')}
-                    {renderCell(metrics.custom.res, 'number', true)}
-                    {renderCell(metrics.custom.cac, 'cac')}
+                    {renderCell(metrics.custom.spend, 'currency', false, metrics.custom.deltas?.spend)}
+                    {renderCell(metrics.custom.roas, 'roas', false, metrics.custom.deltas?.roas)}
+                    {renderCell(metrics.custom.rev, 'currency', false, metrics.custom.deltas?.rev)}
+                    {renderCell(metrics.custom.res, 'number', true, metrics.custom.deltas?.res)}
+                    {renderCell(metrics.custom.cac, 'cac', false, metrics.custom.deltas?.cac)}
                 </>
             )}
 
@@ -266,6 +311,33 @@ export default function DashPage() {
             cac: `$${m.cac.toFixed(2)}`
         });
 
+        // Helper to format deltas
+        const formatDeltas = (d: any) => {
+            if (!d) return undefined;
+            const fmt = (val: number, prefix: string = '', suffix: string = '') => {
+                if (val === null || val === undefined) return '—';
+                const sign = val >= 0 ? '+' : '-';
+                const absVal = Math.abs(val);
+                return `${sign}${prefix}${absVal.toFixed(2)}${suffix}`;
+            };
+
+            // For percents, round to integer
+            const fmtPct = (val: number) => {
+                if (val === null || val === undefined) return '—';
+                const sign = val >= 0 ? '+' : '-';
+                const absVal = Math.abs(val);
+                return `${sign}${Math.round(absVal)}%`;
+            };
+
+            return {
+                spend: fmt(d.spend, '$'),
+                roas: fmtPct(d.roas_pct),
+                rev: fmt(d.revenue, '$'),
+                res: fmt(d.results, '', ''),
+                cac: fmtPct(d.cac_pct)
+            };
+        };
+
         // Check if we have standard ranges or a custom list
         const isCustom = Array.isArray(apiData);
 
@@ -275,7 +347,16 @@ export default function DashPage() {
                 if (row.platform !== targetPlatform) return;
                 const brandName = row.account_name || "Unknown Account";
 
-                const m = extractMetrics(row);
+                let m, deltasStr = undefined;
+                // Check for new nested format (Enhanced Custom Object)
+                if (row.current) {
+                    m = row.current;
+                    if (row.deltas) {
+                        deltasStr = formatDeltas(row.deltas);
+                    }
+                } else {
+                    m = extractMetrics(row);
+                }
 
                 // Skip campaign if spend is 0
                 if (m.spend <= 0) return;
@@ -290,7 +371,12 @@ export default function DashPage() {
 
                 brands[brandName].campaigns.push({
                     label: row.campaign_name,
-                    metrics: { custom: formatMetrics(m) }
+                    metrics: {
+                        custom: {
+                            ...formatMetrics(m),
+                            deltas: deltasStr
+                        }
+                    }
                 });
 
                 // Aggregate

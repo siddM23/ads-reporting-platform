@@ -1,3 +1,4 @@
+// Shad-CN Spinner component: A loading spinner icon,to show statuses like "Syncing.
 import * as React from "react"
 import { Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"

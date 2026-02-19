@@ -1,3 +1,4 @@
+// Shad-CN SpinnerBadge component: A badge with a spinner icon.
 import { Badge } from "@/components/ui/badge"
 import { Spinner } from "@/components/ui/spinner"
 

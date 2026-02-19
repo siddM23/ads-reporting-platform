@@ -1,3 +1,4 @@
+// Shad-CN Popover component: Interactive floating panel that appears when a user clicks a trigger element.
 "use client"
 
 import * as React from "react"

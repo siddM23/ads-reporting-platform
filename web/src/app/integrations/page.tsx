@@ -219,7 +219,7 @@ export default function IntegrationsPage() {
             title: "Meta Ads",
             description: "Connect your Meta Ads accounts",
             icon: <Image src="/facebook.png" alt="Meta Ads" width={28} height={28} className="object-contain" />,
-            accentColor: "bg-gradient-to-br from-blue-600 to-blue-700",
+            accentColor: "bg-white",
             onConnect: handleConnectMeta
         }
     ];

@@ -1,4 +1,4 @@
-import * as React from "react"
+// Card component for reuse in dash, currently used in the Calender/Date filter  
 
 import { cn } from "@/lib/utils"
 
