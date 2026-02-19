@@ -254,6 +254,8 @@ async def get_custom_insights(
     Fetches LIVE from APIs.
     """
     import concurrent.futures
+    from typing import Dict, Any
+
     user_id = user.get("user_id")
     
     # Step B: Fetch authorized integrations
@@ -261,16 +263,145 @@ async def get_custom_insights(
     meta_ids = [i['id'] for i in integrations if i.get('platform') == 'meta']
     google_ids = [i['id'] for i in integrations if i.get('platform') == 'google']
 
+    # Helper for Previous Period
+    def get_previous_period(start, end):
+        fmt = '%Y-%m-%d'
+        try:
+            s_d = datetime.datetime.strptime(start, fmt).date()
+            e_d = datetime.datetime.strptime(end, fmt).date()
+            duration = e_d - s_d
+            # Non-overlapping previous period: end = start - 1 day
+            prev_end_d = s_d - datetime.timedelta(days=1)
+            prev_start_d = prev_end_d - duration
+            return prev_start_d.strftime(fmt), prev_end_d.strftime(fmt)
+        except Exception as e:
+            print(f"Date parsing error: {e}")
+            return None, None
+
+    prev_start_date, prev_end_date = get_previous_period(start_date, end_date)
+    
     # Step C: Parallel fetch from LIVE APIs
     loop = asyncio.get_event_loop()
+    
+    # Use ThreadPool to avoid blocking event loop with synchronous requests calls
     with concurrent.futures.ThreadPoolExecutor() as pool:
+        # Current Range
         meta_future = loop.run_in_executor(pool, fetch_meta_custom, start_date, end_date, meta_ids)
         google_future = loop.run_in_executor(pool, fetch_google_custom, start_date, end_date, google_ids)
         
-        meta_data = await meta_future
-        google_data = await google_future
+        # Previous Range
+        if prev_start_date and prev_end_date:
+            meta_prev_future = loop.run_in_executor(pool, fetch_meta_custom, prev_start_date, prev_end_date, meta_ids)
+            google_prev_future = loop.run_in_executor(pool, fetch_google_custom, prev_start_date, prev_end_date, google_ids)
+        else:
+            meta_prev_future = None
+            google_prev_future = None
         
-    return meta_data + google_data
+        current_meta = await meta_future
+        current_google = await google_future
+        
+        prev_meta = await meta_prev_future if meta_prev_future else []
+        prev_google = await google_prev_future if google_prev_future else []
+
+    # Step D: Aggregation & Delta Computation
+    
+    # Merge lists
+    raw_current = current_meta + current_google
+    raw_previous = prev_meta + prev_google
+    
+    # Helper to clean/parse metrics from raw API rows
+    def parse_metrics(row):
+        # Safely extract floats
+        def get_val(lst, type_key):
+             if not lst: return 0.0
+             if isinstance(lst, list):
+                 for x in lst:
+                     if x.get('action_type') == type_key: return float(x.get('value', 0))
+             return 0.0
+             
+        spend = float(row.get('spend', 0))
+        
+        # Revenue Parsing
+        av = row.get('action_values', [])
+        revenue = get_val(av, 'purchase') or get_val(av, 'omni_purchase') or get_val(av, 'offsite_conversion.fb_pixel_purchase') or get_val(av, 'conversions_value')
+        
+        # Results Parsing
+        ac = row.get('actions', [])
+        results = get_val(ac, 'purchase') or get_val(ac, 'omni_purchase') or get_val(ac, 'offsite_conversion.fb_pixel_purchase') or get_val(ac, 'conversions')
+        
+        roas = (revenue / spend) if spend > 0 else 0.0
+        cac = (spend / results) if results > 0 else 0.0
+        
+        return {
+            "spend": spend,
+            "revenue": revenue,
+            "results": results,
+            "roas": roas,
+            "cac": cac
+        }
+
+    # Map by Campaign ID
+    result_map: Dict[str, Any] = {}
+    
+    # 1. Process Current
+    for row in raw_current:
+        # Use composite key if ID likely to clash? Usually Platform+ID is safer but frontend uses ID.
+        # Let's assume ID is unique enough for now or rely on frontend collision handling.
+        c_id = row.get('campaign_id')
+        if not c_id: continue
+        
+        result_map[c_id] = {
+            "campaign_id": c_id,
+            "campaign_name": row.get('campaign_name'),
+            "account_name": row.get('account_name'),
+            "platform": row.get('platform'),
+            "current": parse_metrics(row),
+            "previous": None, 
+            "deltas": None
+        }
+        
+    # 2. Process Previous
+    for row in raw_previous:
+        c_id = row.get('campaign_id')
+        if not c_id: continue
+        
+        metrics = parse_metrics(row)
+        
+        if c_id in result_map:
+            result_map[c_id]['previous'] = metrics
+        # If not in current, we skip it to keep the table clean (user focus on current range active/visible items)
+        # OR we could add it. For now, skipping simplifies visual consistency.
+
+    # 3. Compute Deltas
+    for c_id, data in result_map.items():
+        curr = data['current']
+        prev = data['previous']
+        
+        if not prev:
+            # If no previous data, deltas are effectively the current values (growth from 0)
+            # Or undefined? User said: "Missing campaigns in previous window -> treat previous as 0."
+            prev = {"spend": 0.0, "revenue": 0.0, "results": 0.0, "roas": 0.0, "cac": 0.0}
+            data['previous'] = prev
+            
+        deltas = {}
+        
+        # Absolute Metrics: Current - Previous
+        deltas['spend'] = curr['spend'] - prev['spend']
+        deltas['revenue'] = curr['revenue'] - prev['revenue']
+        deltas['results'] = curr['results'] - prev['results']
+        
+        # Percentage Metrics: ((Current - Previous) / Previous) * 100
+        def calc_pct(c, p):
+            if p == 0: return None
+            return ((c - p) / p) * 100
+            
+        deltas['roas_pct'] = calc_pct(curr['roas'], prev['roas'])
+        deltas['cac_pct'] = calc_pct(curr['cac'], prev['cac'])
+        
+        data['deltas'] = deltas
+
+    # Return list of enriched campaign objects
+    return list(result_map.values())
 
 @app.get("/api/insights/sync-status")
 async def get_sync_status():
