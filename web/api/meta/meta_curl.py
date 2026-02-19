@@ -134,20 +134,57 @@ def write_to_dynamodb(data, days, integration_id=None):
     # Batch write for efficiency
     metrics_db.batch_write_campaign_metrics(data, days, integration_id=integration_id)
 
+def _fetch_single_account(account, days):
+    """Helper to fetch and store data for a single account."""
+    account_id = account.get('account_id')
+    token = account.get('access_token')
+    integration_id = account.get('id')
+    
+    if not account_id or not token:
+        return []
+        
+    # Fetch from Meta API
+    account_data = fetch_for_account(account_id, decrypt_token(token), days)
+    
+    # Get account name
+    try:
+        clean_id = account_id.strip()
+        if not clean_id.startswith('act_'):
+            clean_id = f"act_{clean_id}"
+        name_r = requests.get(f"https://graph.facebook.com/{FB_VERSION}/{clean_id}", 
+                              params={"access_token": decrypt_token(token), "fields": "name"})
+        acc_name = name_r.json().get("name", f"Account {account_id}")
+    except:
+        acc_name = f"Account {account_id}"
+
+    # Add account name and platform to each row
+    for row in account_data:
+        row['account_name'] = acc_name
+        row['platform'] = 'meta'
+    
+    # Patch the integration record if account_name is missing
+    if not account.get('account_name'):
+        integrations_db.save_integration(
+            platform='meta',
+            account_id=account_id,
+            email=account.get('email'),
+            access_token=token,
+            account_name=acc_name
+        )
+
+    # Batch write to DynamoDB
+    if account_data:
+        write_to_dynamodb(account_data, days, integration_id=integration_id)
+        
+    return account_data
+
 def fetch_and_store(days: int = 7, integration_ids: list = None):
     """
     Fetches data for connected Meta accounts and stores in DynamoDB.
-    If integration_ids is provided, it ONLY syncs those specific accounts.
     """
     if integration_ids:
-        # Fetch specific records by their UUIDs
-        integrations = []
-        for iid in integration_ids:
-            # We use synchronous lookup for now as this is called in a ThreadPoolExecutor 
-            # Or we could use the resource directly. integrations_db has async methods mostly.
-            # list_integrations in database.py is sync.
-            all_meta = integrations_db.list_integrations(platform="meta")
-            integrations = [i for i in all_meta if i.get('id') in integration_ids]
+        all_meta = integrations_db.list_integrations(platform="meta")
+        integrations = [i for i in all_meta if i.get('id') in integration_ids]
     else:
         integrations = integrations_db.list_integrations(platform="meta")
     
@@ -155,62 +192,50 @@ def fetch_and_store(days: int = 7, integration_ids: list = None):
         print("No Meta integrations found to sync.")
         return []
 
-    print(f"Syncing {len(integrations)} Meta accounts for {days} days...")
+    print(f"Syncing {len(integrations)} Meta accounts for {days} days in parallel...")
     
     all_results = []
-    
-    for account in integrations:
-        account_id = account.get('account_id')
-        token = account.get('access_token')
-        integration_id = account.get('id')
-        
-        if not account_id or not token:
-            continue
-            
-        # Fetch from Meta API
-        account_data = fetch_for_account(account_id, decrypt_token(token), days)
-
-        
-        # Get account name
-        try:
-            clean_id = account_id.strip()
-            if not clean_id.startswith('act_'):
-                clean_id = f"act_{clean_id}"
-            name_r = requests.get(f"https://graph.facebook.com/{FB_VERSION}/{clean_id}", 
-                                  params={"access_token": decrypt_token(token), "fields": "name"})
-
-            acc_name = name_r.json().get("name", f"Account {account_id}")
-        except:
-            acc_name = f"Account {account_id}"
-
-        # Add account name and platform to each row
-        # (date_start and date_stop are now coming from the API)
-        for row in account_data:
-            row['account_name'] = acc_name
-            row['platform'] = 'meta'
-        
-        # Patch the integration record if account_name is missing
-        if not account.get('account_name'):
-            integrations_db.save_integration(
-                platform='meta',
-                account_id=account_id,
-                email=account.get('email'),
-                access_token=token, # Already encrypted in the account object
-                account_name=acc_name
-            )
-
-        # Batch write to DynamoDB
-        if account_data:
-            write_to_dynamodb(account_data, days, integration_id=integration_id)
-            all_results.extend(account_data)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(_fetch_single_account, acc, days) for acc in integrations]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                res = future.result()
+                if res:
+                    all_results.extend(res)
+            except Exception as e:
+                print(f"Error in parallel Meta fetch: {e}")
             
     print(f"✅ Synced {len(all_results)} campaigns for {days} days")
     return all_results
 
+def _fetch_single_custom_range_account(account, start_date, end_date):
+    """Helper for custom range fetch of a single account."""
+    account_id = account.get('account_id')
+    token = account.get('access_token')
+    
+    if not account_id or not token:
+        return []
+        
+    # Fetch from Meta API
+    account_data = fetch_for_account(
+        account_id, 
+        decrypt_token(token), 
+        days=0, 
+        start_date=start_date, 
+        end_date=end_date
+    )
+
+    acc_name = account.get('account_name', f"Account {account_id}")
+
+    for row in account_data:
+        row['account_name'] = acc_name
+        row['platform'] = 'meta'
+        
+    return account_data
+
 def fetch_custom_range(start_date, end_date, integration_ids: list = None):
     """
     Fetches data for specific Meta accounts for a custom date range.
-    Does NOT store in DynamoDB, just returns the data.
     """
     if integration_ids:
         all_meta = integrations_db.list_integrations(platform="meta")
@@ -221,35 +246,18 @@ def fetch_custom_range(start_date, end_date, integration_ids: list = None):
     if not integrations:
         return []
 
-    print(f"Fetching Meta custom range: {start_date} to {end_date}...")
+    print(f"Fetching Meta custom range: {start_date} to {end_date} for {len(integrations)} accounts in parallel...")
     
     all_results = []
-    
-    for account in integrations:
-        account_id = account.get('account_id')
-        token = account.get('access_token')
-        
-        if not account_id or not token:
-            continue
-            
-        # Fetch from Meta API
-        account_data = fetch_for_account(
-            account_id, 
-            decrypt_token(token), 
-            days=0, # Ignored when start/end provided
-            start_date=start_date, 
-            end_date=end_date
-        )
-
-        # Get account name (simplified for speed, or could cache)
-        acc_name = account.get('account_name', f"Account {account_id}")
-
-        # Add account name and platform to each row
-        for row in account_data:
-            row['account_name'] = acc_name
-            row['platform'] = 'meta'
-        
-        all_results.extend(account_data)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(_fetch_single_custom_range_account, acc, start_date, end_date) for acc in integrations]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                res = future.result()
+                if res:
+                    all_results.extend(res)
+            except Exception as e:
+                print(f"Error in parallel Meta custom fetch: {e}")
             
     return all_results
 

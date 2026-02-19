@@ -303,122 +303,121 @@ def write_to_dynamodb(data, days, integration_id=None):
         return
     metrics_db.batch_write_campaign_metrics(data, days, integration_id=integration_id)
 
+def _fetch_single_integration(account, days):
+    """Helper to fetch and store data for a single Google integration/CID."""
+    email = account.get('email')
+    token = account.get('access_token')
+    cid = account.get('account_id')
+    
+    if not email or not token or not cid:
+        return []
+        
+    raw_token = decrypt_token(token)
+    
+    # Discovery handling
+    customer_ids = []
+    if "@" in str(cid):
+        customer_ids = discover_accounts(raw_token, email=email)
+        if customer_ids:
+            for acc_obj in customer_ids:
+                real_cid = acc_obj['id']
+                real_name = acc_obj['name']
+                integrations_db.save_integration(
+                    platform="google",
+                    account_id=real_cid,
+                    account_name=real_name,
+                    email=email,
+                    access_token=token
+                )
+        else:
+            return []
+    else:
+        customer_ids = [{'id': cid, 'name': f"Google Account ({cid})"}]
+
+    integration_results = []
+    for target_obj in customer_ids:
+        target_cid = target_obj['id']
+        if "@" in str(target_cid): continue
+
+        account_data = fetch_for_customer(target_cid, raw_token, days)
+        if account_data:
+            # Find the integration record to get unique group ID
+            current_integration = None
+            integration_list = integrations_db.list_integrations(platform="google")
+            for item in integration_list:
+                if item.get('account_id') == target_cid:
+                    current_integration = item
+                    break
+            
+            write_to_dynamodb(account_data, days, integration_id=current_integration.get('id') if current_integration else None)
+            integration_results.extend(account_data)
+            
+            # Update generic names
+            try:
+                current_name = account.get('account_name', '')
+                if not current_name or f"({target_cid})" in current_name:
+                    real_name = get_account_name(target_cid, raw_token)
+                    if real_name:
+                         integrations_db.save_integration(
+                            platform="google",
+                            account_id=target_cid,
+                            account_name=real_name,
+                            email=email,
+                            access_token=token
+                         )
+            except:
+                pass
+    return integration_results
+
 def fetch_and_store(days: int = 7, integration_ids: list = None):
     """
     Fetches data for connected Google accounts and stores in DynamoDB.
     """
     if integration_ids is not None:
-        # STRICT ISOLATION: If an empty list of IDs is provided, do nothing.
-        if not integration_ids:
-            return []
-            
+        if not integration_ids: return []
         all_google = integrations_db.list_integrations(platform="google")
         integrations = [i for i in all_google if i.get('id') in integration_ids]
     else:
-        # GLOBAL FALLBACK: Only if specifically requested via None
         integrations = integrations_db.list_integrations(platform="google")
     
     if not integrations:
         return []
 
-    print(f"GOOGLE SYNC: Starting fetch for {len(integrations)} integrations (Range: {days} days)")
+    print(f"GOOGLE SYNC: Fetching {len(integrations)} integrations for {days} days in parallel...")
     
     all_results = []
-    
-    for account in integrations:
-        email = account.get('email')
-        token = account.get('access_token')
-        cid = account.get('account_id')
-        
-        if not email or not token or not cid:
-            print(f"GOOGLE SYNC: Skipping account due to missing data: {email} (CID: {cid})")
-            continue
-            
-        # The SDK handles its own token refresh if we give it the refresh token.
-        # decrypt_token(token) should be the refresh token (starts with 1//).
-        raw_token = decrypt_token(token)
-        
-        # 2. Handle Case where CID is an email (needs discovery)
-        customer_ids = []
-        if "@" in str(cid):
-            print(f"GOOGLE SYNC: CID is an email ({cid}), attempting discovery via SDK...")
-            customer_ids = discover_accounts(raw_token, email=email)
-            
-            if customer_ids:
-                print(f"GOOGLE SYNC: Found {len(customer_ids)} IDs for {cid}. Updating integration records...")
-                for acc_obj in customer_ids:
-                    real_cid = acc_obj['id']
-                    real_name = acc_obj['name']
-                    integrations_db.save_integration(
-                        platform="google",
-                        account_id=real_cid,
-                        account_name=real_name,
-                        email=email,
-                        access_token=token
-                    )
-            else:
-                print(f"GOOGLE SYNC: No Google Ads accounts found associated with email {cid}. Stopping sync for this account.")
-                customer_ids = []
-        else:
-            # Wrap standard CID in the expected structure for loop
-            customer_ids = [{'id': cid, 'name': f"Google Account ({cid})"}]
-
-        for target_obj in customer_ids:
-            target_cid = target_obj['id']
-            
-            if "@" in str(target_cid):
-                print(f"GOOGLE SYNC: Skipping API call for non-numeric CID: {target_cid}")
-                continue
-
-            print(f"GOOGLE SYNC: Fetching metrics for numeric CID {target_cid} ({email})...")
-            # For target_cid, we pass target_cid as login_customer_id if it's a direct account.
-            # If it's a sub-account of a manager, the SDK might need the manager CID, 
-            # but usually the account CID itself works if we have permissions.
-            account_data = fetch_for_customer(target_cid, raw_token, days)
-            
-            if account_data:
-                print(f"GOOGLE SYNC: Found {len(account_data)} campaigns for CID {target_cid}. Writing to DB...")
-                # We need the integration_id for this CID
-                # If we are in the target_obj loop, we might need to find the specific integration record
-                # However, for Google, sometimes we have one integration linked to many accounts.
-                # But our save_integration creates a separate record for each REAL CID.
-                # So we should look up the integration_id for target_cid.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(_fetch_single_integration, acc, days) for acc in integrations]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                res = future.result()
+                if res: all_results.extend(res)
+            except Exception as e:
+                print(f"Error in parallel Google fetch: {e}")
                 
-                # Fetch integration to get its real ID
-                # (Standard cid vs discovered cid)
-                current_integration = None
-                integration_list = integrations_db.list_integrations(platform="google")
-                for item in integration_list:
-                    if item.get('account_id') == target_cid:
-                        current_integration = item
-                        break
-                
-                write_to_dynamodb(account_data, days, integration_id=current_integration.get('id') if current_integration else None)
-                all_results.extend(account_data)
-                
-                # Check if we need to update the account name (if it's generic)
-                # We do NOT use account_data[0] name because it might be a sub-account of a manager
-                try:
-                    current_name = account.get('account_name', '')
-                    if not current_name or f"({target_cid})" in current_name:
-                        print(f"GOOGLE SYNC: Updating generic name for {target_cid}...")
-                        real_name = get_account_name(target_cid, raw_token)
-                        if real_name:
-                             integrations_db.save_integration(
-                                platform="google",
-                                account_id=target_cid,
-                                account_name=real_name,
-                                email=email,
-                                access_token=token
-                             )
-                except Exception as update_e:
-                    print(f"GOOGLE SYNC warning: could not update account name: {update_e}")
-
-            else:
-                print(f"GOOGLE SYNC: No performance data found for CID {target_cid} in the last {days} days.")
-            
     print(f"GOOGLE SYNC COMPLETE: Total {len(all_results)} campaigns synced for {days} days.")
     return all_results
+
+def _fetch_single_custom_range_integration(account, start_date, end_date):
+    """Helper for custom range fetch for a single Google integration."""
+    email = account.get('email')
+    token = account.get('access_token')
+    cid = account.get('account_id')
+    
+    if not email or not token or not cid or "@" in str(cid):
+        return []
+        
+    raw_token = decrypt_token(token)
+    
+    # Fetch
+    account_data = fetch_for_customer(
+        cid, 
+        raw_token, 
+        days=0, 
+        start_date=start_date, 
+        end_date=end_date
+    )
+    return account_data if account_data else []
 
 def fetch_custom_range(start_date, end_date, integration_ids: list = None):
     """
@@ -433,42 +432,17 @@ def fetch_custom_range(start_date, end_date, integration_ids: list = None):
     if not integrations:
         return []
 
-    print(f"GOOGLE CUSTOM FETCH: Starting fetch for {len(integrations)} integrations (Range: {start_date} to {end_date})")
+    print(f"GOOGLE CUSTOM FETCH: Starting parallel fetch for {len(integrations)} integrations (Range: {start_date} to {end_date})")
     
     all_results = []
-    
-    for account in integrations:
-        email = account.get('email')
-        token = account.get('access_token')
-        cid = account.get('account_id')
-        
-        if not email or not token or not cid:
-            continue
-            
-        raw_token = decrypt_token(token)
-        
-        # Discovery handling (simplified for custom fetch - assume CIDs are resolved or we skip complex discovery for speed)
-        # However, we must handle email-based CIDs if they exist in DB
-        customer_ids = [cid]
-        if "@" in str(cid):
-             # Try to discover on the fly or just skip to avoid blocking ui? 
-             # Better to skip email-cids in custom fetch if they weren't resolved by sync
-             continue
-             
-        for target_cid in customer_ids:
-            if "@" in str(target_cid): continue
-
-            # Fetch
-            account_data = fetch_for_customer(
-                target_cid, 
-                raw_token, 
-                days=0, 
-                start_date=start_date, 
-                end_date=end_date
-            )
-            
-            if account_data:
-                all_results.extend(account_data)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(_fetch_single_custom_range_integration, acc, start_date, end_date) for acc in integrations]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                res = future.result()
+                if res: all_results.extend(res)
+            except Exception as e:
+                print(f"Error in parallel Google custom fetch: {e}")
 
     return all_results
 
