@@ -205,7 +205,6 @@ def fetch_and_store(days: int = 7, integration_ids: list = None):
             all_results.extend(account_data)
             
     print(f"✅ Synced {len(all_results)} campaigns for {days} days")
-    print(f"✅ Synced {len(all_results)} campaigns for {days} days")
     return all_results
 
 def fetch_custom_range(start_date, end_date, integration_ids: list = None):

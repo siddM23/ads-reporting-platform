@@ -418,7 +418,6 @@ def fetch_and_store(days: int = 7, integration_ids: list = None):
                 print(f"GOOGLE SYNC: No performance data found for CID {target_cid} in the last {days} days.")
             
     print(f"GOOGLE SYNC COMPLETE: Total {len(all_results)} campaigns synced for {days} days.")
-    print(f"GOOGLE SYNC COMPLETE: Total {len(all_results)} campaigns synced for {days} days.")
     return all_results
 
 def fetch_custom_range(start_date, end_date, integration_ids: list = None):

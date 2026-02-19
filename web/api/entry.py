@@ -385,16 +385,21 @@ async def get_custom_insights(
             
         deltas = {}
         
-        # Absolute Metrics: Current - Previous
-        deltas['spend'] = curr['spend'] - prev['spend']
-        deltas['revenue'] = curr['revenue'] - prev['revenue']
-        deltas['results'] = curr['results'] - prev['results']
-        
-        # Percentage Metrics: ((Current - Previous) / Previous) * 100
+        # Helper for Delta calculation: returns None if previous is 0
+        def calc_delta(c, p):
+            if p == 0: return None
+            return c - p
+
         def calc_pct(c, p):
             if p == 0: return None
             return ((c - p) / p) * 100
-            
+        
+        # Absolute Metrics
+        deltas['spend'] = calc_delta(curr['spend'], prev['spend'])
+        deltas['revenue'] = calc_delta(curr['revenue'], prev['revenue'])
+        deltas['results'] = calc_delta(curr['results'], prev['results'])
+        
+        # Percentage Metrics
         deltas['roas_pct'] = calc_pct(curr['roas'], prev['roas'])
         deltas['cac_pct'] = calc_pct(curr['cac'], prev['cac'])
         

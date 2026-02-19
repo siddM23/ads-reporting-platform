@@ -140,7 +140,7 @@ const MetricRow: React.FC<MetricRowProps> = ({
                             <div className="h-[1px] w-4 bg-slate-200" />
                         </div>
                     )}
-                    <span 
+                    <span
                         className={cn(
                             isCampaign ? "text-sm text-slate-600 font-medium" : "text-[14px] text-slate-900 font-semibold",
                             "max-w-[240px] break-words leading-snug"
@@ -545,35 +545,38 @@ export default function DashPage() {
             return;
         }
 
-        // 2. Poll every 2 seconds for 30 seconds to show live progress
+        // 2. Poll for 30 seconds to show progress
+        // Only refetch if we are NOT on a custom range (Custom is LIVE and not updated by background sync)
         let pollCount = 0;
-        const maxPolls = 15; // 15 polls * 2s = 30s max
+        const maxPolls = 6; // 6 polls * 5s = 30s total
 
-        const pollInterval = setInterval(async () => {
+        const poll = async () => {
+            if (pollCount >= maxPolls) {
+                setIsSyncing(false);
+                await refetchSyncStatus();
+                console.log("Sync polling complete");
+                return;
+            }
+
             try {
-                // Determine if we should really Refetch or just invalidate. 
-                // Refetch gives us the new data to stick in state if we were using state,
-                // but here useQuery handles it. Calling refetchData() updates the cache.
-                await refetchData();
+                // If the user is looking at Custom range, don't hammer the live API. 
+                // The sync only updates the cached 7/30/180 ranges.
+                if (selectedRange !== "Custom") {
+                    await refetchData();
+                } else {
+                    // Just refresh sync status if on custom
+                    await refetchSyncStatus();
+                }
             } catch (e) {
                 console.error("Poll failed:", e);
             }
 
             pollCount++;
-            if (pollCount >= maxPolls) {
-                clearInterval(pollInterval);
-                setIsSyncing(false);
-                refetchSyncStatus();
-                console.log("Sync polling complete");
-            }
-        }, 2000);
+            setTimeout(poll, 5000); // Wait 5 seconds between polls
+        };
 
-        // Safety: Stop after 32s regardless
-        setTimeout(() => {
-            clearInterval(pollInterval);
-            setIsSyncing(false);
-            refetchSyncStatus();
-        }, 32000);
+        // Start polling
+        setTimeout(poll, 2000);
     };
 
     // Fetch Integrations to check for re-auth needed
