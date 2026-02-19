@@ -72,3 +72,37 @@ sudo certbot --nginx -d your-domain.com -d www.your-domain.com
 - **Nginx Errors**: `sudo tail -f /var/log/nginx/error.log`
 - **App Status**: `pm2 status`
 - **Restart All**: `pm2 restart all`
+
+
+
+
+## DOCS: Dynamo DB update and required Future works
+
+This commit reflects the recent DB improvements to the ARP (Ads Reporting Platform). 
+
+
+## Improvements Made:
+- UI Documentation: Added purpose-driven comments to the core Shad-CN UI library 
+  (Badge, Button, Card, Popover, DateFilter) to improve developer onboarding and code maintainability.
+- Identity Migration: Successfully migrated Users and Integrations tables from email-based 
+  Primary Keys to UUID-based IDs.
+
+- Soft Deletion: Integrated 'is_deleted' logic for Integrations to prevent accidental data 
+  loss.
+
+- Backend Isolation: Refactored the `/api/insights` endpoints to explicitly filter results 
+  by authorized integration IDs retrieved from the user session (Problem: This shouldn't be done of the backend, the DB pull takes longer than needed and filtering out integrations adds time to this, needs change in DB design).
+
+## Current Limitations:
+- Backend Filtering Latency: Authorization filtering for ads data is handled on the backend, leading to inefficient database scans and increased API response times.
+- Storage Growth: Currently lacks a TTL (Time To Live) strategy, meaning stale metric data will grow indefinitely. 
+
+## Future Work:
+- Schema Hardening: Recreate Metrics tables using 'integration_id' as the Partition Key 
+  for physical data isolation (Silo Pattern).
+- Performance Indexing: Implement 'IntegrationRangeIndex' (PK: integration_id, SK: range_days) 
+  to eliminate hot partitions and achieve sub-30ms dashboard loads.
+- Lifecycle Management: Add TTL attributes to metric records to automate the cleanup 
+  of data older than 180 days.
+- Unified Metrics: Consolidate platform-specific tables into a single 'Ad_Metrics' table 
+  to simplify cross-channel reporting logic.
